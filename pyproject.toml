@@ -1,6 +1,6 @@
 [project]
 name = "post-channel-bot"
-version = "2.3.0"
+version = "2.4.0"
 description = "Telegram-бот и веб-панель для публикации постов в свои каналы: Markdown, медиа, цветные кнопки, контент-план, статистика"
 readme = "README.md"
 license = "MIT"

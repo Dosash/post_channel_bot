@@ -48,7 +48,7 @@ def test_normalize_hub_url_rejects(raw):
 def test_config_defaults_and_version():
     cfg = Config(bot_token="1:x")
     assert cfg.web_prefix == "" and cfg.hub_url is None
-    assert cfg.version == app.__version__ == "2.3.0"
+    assert cfg.version == app.__version__ == "2.4.0"
     assert cfg.web_url == "http://127.0.0.1:8080/"
 
 
@@ -108,7 +108,7 @@ def test_load_config_new_variables(env):
     assert cfg.web_prefix == "/posts" and cfg.hub_url == "/"
     assert cfg.web_password == "env-secret-1"
     assert cfg.web_url == "http://127.0.0.1:8095/posts/"
-    assert cfg.version == "2.3.0"
+    assert cfg.version == "2.4.0"
     assert Path(cfg.uploads_dir).is_dir()
 
 

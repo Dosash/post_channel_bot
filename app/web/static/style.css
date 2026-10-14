@@ -641,6 +641,13 @@ select.input {
 .seg:hover { color: var(--text); }
 .seg[aria-pressed="true"] { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: var(--shadow-sm); }
 
+/* overview: channel list split by folders */
+.ov-folders { margin-bottom: var(--space-3); }
+.ov-folders .seg { display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; }
+.ov-folders .seg > span:not(.count) { overflow: hidden; text-overflow: ellipsis; }
+.ov-folders .seg .i { width: 15px; height: 15px; color: var(--text-3); }
+.ov-folders .seg .count { margin-left: 0; }
+
 /* underline tabs */
 .tabs {
   display: flex;

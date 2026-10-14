@@ -1431,9 +1431,9 @@
 
   async function pageOverview(root, r, ctx) {
     setPageTitle('Обзор');
-    const [ov, channels, postsData, upcoming] = await Promise.all([
+    const [ov, grouped, postsData, upcoming] = await Promise.all([
       api.get('api/overview'),
-      loadChannels(),
+      loadGrouped(),
       api.get('api/posts?status=all&limit=5&offset=0'),
       // Upcoming publications are shown separately: the recent list is ordered by activity, so a
       // post scheduled long ago for next week would not appear in it.
@@ -1446,8 +1446,12 @@
     applyOverviewToShell(ov);
 
     const s = ov.stats || {};
+    const { channels } = grouped;
     const active = channels.filter((c) => c.status === 'active');
     const pending = channels.filter((c) => c.status === 'pending');
+    const tabs = overviewFolderTabs(grouped.groups);
+    let tabKey = storageGet(OVERVIEW_FOLDER_KEY);
+    if (!tabs.some((t) => t.key === tabKey)) tabKey = tabs.length ? tabs[0].key : '';
     const posts = Array.isArray(postsData.posts) ? postsData.posts : [];
     const bot = ov.bot || {};
     const subtitle = bot.username
@@ -1484,11 +1488,40 @@
       <section class="section">
         <div class="section-head"><h2>Каналы</h2><a class="btn btn-ghost btn-sm" href="#/channels">Все каналы</a></div>
         ${active.length
-          ? `<div class="grid-cards">${active.map(channelMiniHtml).join('')}</div>`
+          ? tabs.length > 1
+            ? `<div class="segmented ov-folders" role="group" aria-label="Папки каналов">${tabs.map((t) => `<button type="button" class="seg" data-action="ov-folder" data-key="${esc(t.key)}" aria-pressed="${t.key === tabKey}">${t.key === 'all' ? '' : icon('folder')}<span>${esc(t.name)}</span><span class="count">${t.channels.length}</span></button>`).join('')}</div>
+              ${tabs.map((t) => `<div class="grid-cards" data-folder-pane="${esc(t.key)}"${t.key === tabKey ? '' : ' hidden'}>${t.channels.map(channelMiniHtml).join('')}</div>`).join('')}`
+            : `<div class="grid-cards">${active.map(channelMiniHtml).join('')}</div>`
           : emptyState('channels', 'Каналов пока нет', 'Сделайте бота администратором канала с правом публикации — он сам предложит добавить канал. Или добавьте канал вручную.', '<a class="btn btn-primary" href="#/channels">Добавить канал</a>')}
       </section>`;
 
-    onAction(root, pendingHandlers(() => route()));
+    onAction(root, {
+      ...pendingHandlers(() => route()),
+      'ov-folder': (el) => {
+        const key = el.dataset.key;
+        storageSet(OVERVIEW_FOLDER_KEY, key);
+        $$('[data-action="ov-folder"]', root).forEach((b) => b.setAttribute('aria-pressed', String(b === el)));
+        $$('[data-folder-pane]', root).forEach((pane) => { pane.hidden = pane.dataset.folderPane !== key; });
+      },
+    });
+  }
+
+  const OVERVIEW_FOLDER_KEY = 'pcb.overviewFolder';
+
+  /**
+   * Folder tabs of the overview's channel list: a tab per folder with active channels (in folder
+   * order), «Без папки», then «Все». No folders — a single tab, i.e. a plain list without tabs.
+   */
+  function overviewFolderTabs(groups) {
+    const tabs = groups
+      .map((g) => ({
+        key: g.folder ? `f${num(g.folder.id)}` : 'none',
+        name: g.folder ? g.folder.name || 'Папка' : 'Без папки',
+        channels: g.channels.filter((c) => c.status === 'active'),
+      }))
+      .filter((t) => t.channels.length);
+    if (tabs.length > 1) tabs.push({ key: 'all', name: 'Все', channels: tabs.flatMap((t) => t.channels) });
+    return tabs;
   }
 
   function upcomingRowHtml(it) {

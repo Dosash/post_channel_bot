@@ -1158,6 +1158,7 @@
     currentHash: location.hash || '#/',
     loginShown: false,
     composer: null,
+    botUsername: '', // the bot that publishes (from api/overview): the «forward a ready post» hint links to it
     serverTz: '',
     premiumEmoji: null, // «У бота есть юзернейм с Fragment» (api/settings, api/render); null = unknown
     pageRoot: null, // element of the current page (its actions live in the topbar: pageActions)
@@ -1914,6 +1915,14 @@
     }).join('');
   }
 
+  /** A new post: ready posts are imported by forwarding them to the bot (the panel cannot do it). */
+  function forwardHintHtml() {
+    const bot = state.botUsername
+      ? `боту <a class="callout-link" href="https://t.me/${esc(encodeURIComponent(state.botUsername))}" target="_blank" rel="noopener noreferrer">@${esc(state.botUsername)}</a>`
+      : 'боту в Telegram';
+    return `<div class="callout" id="cmp-forward-hint">${icon('info')}<div><b>Есть готовый пост?</b> Перешлите его ${bot} — из канала или от кого угодно. Бот перенесёт текст с форматированием и эмодзи, фото/видео и кнопки-ссылки с цветами и создаст черновик — он появится здесь, в «Постах».</div></div>`;
+  }
+
   function renderComposer(cmp) {
     const root = cmp.root;
     const ro = cmp.mode === 'readonly';
@@ -1924,6 +1933,7 @@
       <div id="cmp-head"></div>
       <div class="composer${ro ? ' is-readonly' : ''}">
         <div class="cmp-editor">
+          ${!cmp.postId && !ro ? forwardHintHtml() : ''}
           <section class="card" aria-labelledby="cmp-text-label">
             <div class="card-head"><h2 id="cmp-text-label">Текст</h2><span class="counter" id="cmp-counter" aria-live="polite"></span></div>
             <div class="md-toolbar" role="toolbar" aria-label="Форматирование текста">${toolbarHtml()}</div>
@@ -6234,6 +6244,7 @@
   function applyOverviewToShell(ov) {
     if (ov && ov.stats && ov.stats.channels_pending !== undefined) updatePendingBadge(num(ov.stats.channels_pending));
     if (ov && ov.timezone) state.serverTz = ov.timezone;
+    if (ov && ov.bot) state.botUsername = ov.bot.username || '';
   }
 
   /** Background refresh of the sidebar (pending channels badge, the bot's timezone). */

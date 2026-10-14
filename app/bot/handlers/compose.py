@@ -25,6 +25,11 @@ keeps working after a restart (the session is re-created from the DB).
 
 Albums: Telegram sends each photo / video of an album as its own message. Album items are only
 buffered (`app.bot.albums.AlbumCollector`) and handled together once the album is complete.
+
+Ready posts: a message forwarded to the bot (from a channel, a chat, anyone) becomes the post as
+it is — formatting and custom emoji (`html_text`), media, URL buttons with their colors and the
+options Telegram reports (caption above media, link preview off). Forwarded from the main menu,
+it opens a new draft right away. Bot only: the web panel just mentions it.
 Rendering of the panel and prompts lives in `app.bot.compose_view`.
 """
 from __future__ import annotations
@@ -39,7 +44,7 @@ from aiogram import F, Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, MessageOriginChannel
 
 from app.bot.callbacks import (
     ComposeCb,
@@ -104,7 +109,7 @@ from app.bot.utils import (
     safe_delete,
     tz_name,
 )
-from app.buttons import ButtonsError, count_buttons, parse_buttons
+from app.buttons import ButtonsError, count_buttons, parse_buttons, validate_buttons
 from app.db import (
     CH_ACTIVE,
     POST_DELETED,
@@ -152,7 +157,9 @@ NEW_PROMPT = (
     "Можно использовать Markdown: <code>**жирный**</code>, <code>*курсив*</code>, "
     "<code>__подчёркнутый__</code>, <code>~~зачёркнутый~~</code>, <code>||спойлер||</code>, "
     "<code>[ссылка](https://…)</code>, <code>&gt; цитата</code> — или обычное форматирование "
-    "Telegram. Подробнее — /help."
+    "Telegram. Подробнее — /help.\n\n"
+    "📨 Или просто перешлите сюда готовый пост — откуда угодно: перенесу текст с форматированием и "
+    "эмодзи, фото/видео и кнопки-ссылки с их цветами."
 )
 NO_CHANNELS_TEXT = (
     "У вас пока нет подключённых каналов 🙁\n\n"
@@ -199,6 +206,8 @@ class Content:
 
     text_md: str | None = None  # None = the input has no text / caption
     media: list[dict] | None = None  # None = the input has no media
+    buttons: list[list[dict]] | None = None  # None = the input has no (usable) inline buttons
+    options: dict[str, bool] = field(default_factory=dict)  # post options the message itself carries
     skipped: int = 0  # album items that are not photos / videos / GIFs
     extra_captions: int = 0  # album items whose own caption was dropped
     notes: list[str] = field(default_factory=list)
@@ -242,11 +251,54 @@ def _unsupported_hint(message: Message) -> str:
     return "Поддерживаются текст, фото, видео и GIF. Пришлите текст поста или медиа."
 
 
+def message_buttons(message: Message) -> tuple[list[list[dict]] | None, list[str]]:
+    """URL buttons of a message's inline keyboard (a forwarded ready post) as post buttons, with
+    their colors. Buttons without a link (callbacks of another bot, games, payments…) cannot be
+    reproduced and are skipped. Returns (rows or None, notes)."""
+    markup = message.reply_markup
+    if not isinstance(markup, InlineKeyboardMarkup) or not markup.inline_keyboard:
+        return None, []
+    rows: list[list[dict]] = []
+    skipped = 0
+    for row in markup.inline_keyboard:
+        buttons = []
+        for button in row:
+            url = button.url or (button.login_url.url if button.login_url else None)
+            if not url:
+                skipped += 1
+                continue
+            buttons.append({"text": button.text, "url": url, "style": button.style})
+        if buttons:
+            rows.append(buttons)
+    notes = []
+    if skipped:
+        notes.append(f"ℹ️ Пропущено кнопок: {skipped} — переносятся только кнопки-ссылки.")
+    try:
+        rows = validate_buttons(rows)
+    except ButtonsError as exc:
+        return None, [*notes, f"⚠️ Кнопки не перенесены: {exc}. Задайте их в «🔘 Кнопки»."]
+    return rows or None, notes
+
+
+def message_options(message: Message) -> dict[str, bool]:
+    """Post options a (forwarded) message carries: caption above media, link preview off."""
+    options: dict[str, bool] = {}
+    if message.text is None and message.show_caption_above_media:
+        options["caption_above"] = True
+    preview = message.link_preview_options
+    if message.text is not None and preview is not None and preview.is_disabled:
+        options["disable_preview"] = True
+    return options
+
+
 def content_from_messages(messages: list[Message], bot_id: int | None = None) -> Content:
     """Composer input from one message or the messages of an album (ordered); `bot_id` — the bot
-    that received them (see `message_media`)."""
+    that received them (see `message_media`). A forwarded ready post keeps its URL buttons and
+    options too."""
     if len(messages) == 1 and messages[0].text:
-        return Content(text_md=html_to_md(messages[0].html_text))
+        buttons, notes = message_buttons(messages[0])
+        return Content(text_md=html_to_md(messages[0].html_text), buttons=buttons,
+                       options=message_options(messages[0]), notes=notes)
     content = Content(media=[])
     for message in messages:
         item = message_media(message, bot_id)
@@ -261,6 +313,9 @@ def content_from_messages(messages: list[Message], bot_id: int | None = None) ->
                 content.extra_captions += 1
     if not content.media:
         raise InputError(_unsupported_hint(messages[0]))
+    content.options = message_options(messages[0])
+    if len(messages) == 1:  # albums never carry buttons
+        content.buttons, content.notes = message_buttons(messages[0])
     if content.skipped:
         content.notes.append(f"ℹ️ Пропущено файлов: {content.skipped} — в пост можно добавить только фото, "
                              "видео и GIF.")
@@ -528,9 +583,12 @@ async def create_draft(bot: Any, state: FSMContext, db: Any, config: Any, chat_i
         return
     text_md = content.text_md or ""
     source = text_md.strip()
+    extra: dict[str, Any] = dict(content.options)
+    if content.buttons and len(media) <= 1:
+        extra["buttons"] = content.buttons
     post_id = await db.create_post(
         text_md=text_md, text_html=md_to_html(source) if source else "", media=media, status=POST_DRAFT,
-        source="bot", created_by=user_id,
+        source="bot", created_by=user_id, **extra,
     )
     active = await db.list_channels([CH_ACTIVE])
     if len(active) == 1:
@@ -571,7 +629,11 @@ async def apply_content(bot: Any, state: FSMContext, db: Any, config: Any, chat_
             return
     if content.text_md is not None:
         fields["text_md"] = content.text_md
-    if len(fields.get("media") or []) > 1 and count_buttons(post.get("buttons")):
+    if content.buttons is not None:
+        fields["buttons"] = content.buttons
+    allowed = available_options({**post, **fields}, edit=edit)
+    fields.update({key: value for key, value in content.options.items() if key in allowed})
+    if len(fields.get("media") or []) > 1 and count_buttons(fields.get("buttons", post.get("buttons"))):
         await _ask_album_without_buttons(bot, state, chat_id, data, post, fields)
         return
     await commit_fields(bot, state, db, config, chat_id, data, fields, note="\n".join(content.notes) or None)
@@ -634,10 +696,50 @@ async def on_first_content(message: Message, state: FSMContext, db: Any, config:
     await create_draft(message.bot, state, db, config, message.chat.id, message.from_user.id, content)
 
 
+async def _origin_note(message: Message, db: Any) -> str | None:
+    """A post forwarded from a channel that is not connected: say how to connect it (before V2.4
+    such a forward in the main menu offered to add the channel)."""
+    origin = message.forward_origin
+    if not isinstance(origin, MessageOriginChannel):
+        return None
+    channel = await db.get_channel(origin.chat.id)
+    if channel is not None and channel["status"] == CH_ACTIVE:
+        return None
+    return (f"ℹ️ Канал «{esc(origin.chat.title or origin.chat.id)}» не подключён к боту. Если это ваш канал — "
+            "подключите его в «📢 Каналы» → «➕ Добавить канал».")
+
+
+async def on_forwarded_post(message: Message, state: FSMContext, db: Any, config: Any, albums: Any) -> None:
+    """A ready post forwarded outside any dialog: open a new draft from it right away."""
+    if not await db.list_channels([CH_ACTIVE]):
+        if not (message.media_group_id and albums.seen(message)):
+            await message.answer(NO_CHANNELS_TEXT, reply_markup=no_channels_kb())
+        return
+    await leave_state(message.bot, message.chat.id, state)
+    await state.set_state(ComposeStates.start)
+    if message.media_group_id:  # the rest of the album arrives in the `start` state
+        await on_album_item(message, state, db, config, albums)
+        return
+    try:
+        content = content_from_messages([message], bot_id_of(message.bot))
+    except InputError as exc:
+        await state.clear()
+        await message.answer(esc(exc), reply_markup=main_menu())
+        return
+    note = await _origin_note(message, db)
+    if note:
+        content.notes.append(note)
+    await create_draft(message.bot, state, db, config, message.chat.id, message.from_user.id, content)
+
+
 async def on_text(message: Message, state: FSMContext, db: Any, config: Any) -> None:
-    """New post text (✏️ Текст, or any text while the panel is shown)."""
-    await apply_content(message.bot, state, db, config, message.chat.id,
-                        Content(text_md=html_to_md(message.html_text)))
+    """New post text (✏️ Текст, or any text while the panel is shown). A ready post forwarded
+    while the panel is shown also brings its buttons and options."""
+    if message.forward_origin is not None and await state.get_state() == ComposeStates.menu.state:
+        content = content_from_messages([message], bot_id_of(message.bot))
+    else:
+        content = Content(text_md=html_to_md(message.html_text))
+    await apply_content(message.bot, state, db, config, message.chat.id, content)
 
 
 async def on_media(message: Message, state: FSMContext, db: Any, config: Any) -> None:
@@ -645,6 +747,8 @@ async def on_media(message: Message, state: FSMContext, db: Any, config: Any) ->
     content = content_from_messages([message], bot_id_of(message.bot))
     data = await state.get_data()
     in_menu = await state.get_state() == ComposeStates.media.state
+    if in_menu:  # the media menu changes only the media (and the caption)
+        content.buttons, content.options, content.notes = None, {}, []
     mode = (data.get("media_mode") or "replace") if in_menu else "replace"
     await apply_content(message.bot, state, db, config, message.chat.id, content, mode=mode)
 
@@ -1475,6 +1579,7 @@ def create_router() -> Router:
 
     msg = router.message
     media_types = F.photo | F.video | F.animation
+    msg.register(on_forwarded_post, StateFilter(None), F.forward_origin, F.text | media_types)
     msg.register(on_album_item, StateFilter(ComposeStates), F.media_group_id, UserInput())
     msg.register(on_first_content, StateFilter(ComposeStates.start), UserInput())
     msg.register(on_text, StateFilter(ComposeStates.text, ComposeStates.menu), F.text, UserInput())

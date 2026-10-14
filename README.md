@@ -9,6 +9,30 @@ Markdown-разметка, фото, видео, GIF и альбомы, **цве
 - Бот приватный: им пользуются только администраторы из `ADMIN_IDS`, остальным он не отвечает.
 - Интерфейс на русском. Лицензия [MIT](LICENSE).
 
+**Telegram-бот** — всё делается прямо в чате с ботом:
+
+<p align="center"><a href="docs/screenshots/bot-overview.png"><img src="docs/screenshots/bot-overview.png" alt="Экраны Telegram-бота: меню, новый пост, посты, статистика, каналы, настройки, контент-план" width="900"></a></p>
+
+<details>
+<summary>Экраны бота по отдельности</summary>
+<br>
+
+<table>
+  <tr>
+    <td align="center" valign="top"><a href="docs/screenshots/bot-menu.png"><img src="docs/screenshots/bot-menu.png" alt="Бот — Главное меню" width="200"></a><br><sub>Главное меню</sub></td>
+    <td align="center" valign="top"><a href="docs/screenshots/bot-new-post.png"><img src="docs/screenshots/bot-new-post.png" alt="Бот — Новый пост" width="200"></a><br><sub>Новый пост</sub></td>
+    <td align="center" valign="top"><a href="docs/screenshots/bot-posts.png"><img src="docs/screenshots/bot-posts.png" alt="Бот — Посты" width="200"></a><br><sub>Посты</sub></td>
+    <td align="center" valign="top"><a href="docs/screenshots/bot-plan.png"><img src="docs/screenshots/bot-plan.png" alt="Бот — Контент-план" width="200"></a><br><sub>Контент-план</sub></td>
+  </tr>
+  <tr>
+    <td align="center" valign="top"><a href="docs/screenshots/bot-channels.png"><img src="docs/screenshots/bot-channels.png" alt="Бот — Каналы и папки" width="200"></a><br><sub>Каналы и папки</sub></td>
+    <td align="center" valign="top"><a href="docs/screenshots/bot-stats.png"><img src="docs/screenshots/bot-stats.png" alt="Бот — Статистика" width="200"></a><br><sub>Статистика</sub></td>
+    <td align="center" valign="top"><a href="docs/screenshots/bot-settings.png"><img src="docs/screenshots/bot-settings.png" alt="Бот — Настройки" width="200"></a><br><sub>Настройки</sub></td>
+    <td></td>
+  </tr>
+</table>
+</details>
+
 **Веб-панель** (на скриншотах — демо-данные, нажмите, чтобы открыть в полном размере):
 
 <table>

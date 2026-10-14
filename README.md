@@ -656,3 +656,17 @@ uv run pytest -q
 Если бот вам пригодился, я буду благодарен за ссылку на автора ([Dosash](https://github.com/Dosash)) или на этот репозиторий
 ([github.com/Dosash/post_channel_bot](https://github.com/Dosash/post_channel_bot)): в описании своего бота, в канале или в своём проекте на основе
 этого кода. Это не обязательно, но очень приятно. ⭐ на GitHub тоже помогает.
+
+## Поддержка
+
+Вопросы, идеи и сообщения об ошибках — в [Issues](https://github.com/Dosash/post_channel_bot/issues) или на любой из площадок ниже:
+
+[![dosash.ru](https://img.shields.io/badge/dosash.ru-0b0f19?style=for-the-badge&logo=googlechrome&logoColor=00e5ff)](https://dosash.ru)
+[![Twitch](https://img.shields.io/badge/Twitch-9146FF?style=for-the-badge&logo=twitch&logoColor=white)](https://twitch.tv/dosash)
+[![Kick](https://img.shields.io/badge/Kick-53FC18?style=for-the-badge&logo=kick&logoColor=black)](https://kick.com/dosash1)
+[![YouTube](https://img.shields.io/badge/YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtube.com/@dosash)
+[![Discord](https://img.shields.io/badge/RedImpact-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/WubwwU2bpM)
+
+## 💖 Поддержать
+
+Если бот пригодился: [CloudTips](https://pay.cloudtips.ru/p/894f4248) (карта) или [Telegram-кошелёк](https://t.me/send?start=IVoQmPAfgWnM) (крипта).

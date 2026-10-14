@@ -1,0 +1,25 @@
+# Бот публикации постов + веб-панель (один контейнер).
+# Сеть хоста: панель слушает WEB_HOST:WEB_PORT прямо на сервере (по умолчанию 127.0.0.1:8080 —
+# доступна только с самого сервера; как открыть её — см. README, раздел «Доступ к веб-панели»).
+services:
+  post-bot:
+    build: .
+    image: post-channel-bot:latest
+    container_name: post-channel-bot
+    restart: unless-stopped
+    # Graceful stop: running publishes may finish (the app's shutdown budget is about 72 s,
+    # see SHUTDOWN_TIMEOUT in app/__main__.py) before Docker sends SIGKILL.
+    stop_grace_period: 90s
+    network_mode: host
+    env_file: .env
+    environment:
+      DB_PATH: /app/data/bot.db
+      UPLOADS_DIR: /app/data/uploads
+    volumes:
+      - ./data:/app/data
+    mem_limit: 384m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="ru" data-app="posts">
+<head>
+  <meta charset="utf-8">
+  <base href="/">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="pcb-hub" content="">
+  <meta name="pcb-version" content="">
+  <title>Посты — панель</title>
+  <link rel="icon" type="image/svg+xml" href="static/favicon.svg">
+  <link rel="stylesheet" href="static/style.css">
+  <script>
+    // Theme before the first paint: shared key "panel-theme" = light | dark | system.
+    // The old per-panel key "pcb.theme" is migrated once and removed.
+    (function () {
+      try {
+        var s = window.localStorage, t = s.getItem('panel-theme'), old = s.getItem('pcb.theme');
+        if (old !== null) {
+          if (t === null) {
+            t = old === 'light' || old === 'dark' ? old : 'system';
+            s.setItem('panel-theme', t);
+          }
+          s.removeItem('pcb.theme');
+        }
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      } catch (e) { /* storage blocked: follow the system theme */ }
+    })();
+  </script>
+  <script src="static/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#view">К содержимому</a>
+
+  <div class="app" id="app">
+    <aside class="sidebar" id="sidebar" aria-label="Главное меню">
+      <a class="back" id="hub-link" href="/" hidden><span data-icon="back"></span><span>Все панели</span></a>
+      <a class="product" href="#/" aria-label="Посты — обзор">
+        <span class="product-logo" data-icon="newspaper"></span>
+        <span class="product-text">
+          <span class="product-name">Посты</span>
+          <span class="product-sub">Публикация в каналы</span>
+        </span>
+      </a>
+      <nav class="nav" aria-label="Разделы">
+        <div class="nav-group">
+          <div class="nav-label">Публикации</div>
+          <a class="nav-item" href="#/" data-nav="overview"><span data-icon="dashboard"></span><span>Обзор</span></a>
+          <a class="nav-item" href="#/compose" data-nav="compose"><span data-icon="edit"></span><span>Новый пост</span></a>
+          <a class="nav-item" href="#/posts" data-nav="posts"><span data-icon="posts"></span><span>Посты</span></a>
+          <a class="nav-item" href="#/plan" data-nav="plan"><span data-icon="calendar"></span><span>Контент-план</span></a>
+        </div>
+        <div class="nav-group">
+          <div class="nav-label">Каналы</div>
+          <a class="nav-item" href="#/channels" data-nav="channels"><span data-icon="channels"></span><span>Каналы</span><span class="count" data-pending hidden></span></a>
+          <a class="nav-item" href="#/stats" data-nav="stats"><span data-icon="chart"></span><span>Статистика</span></a>
+        </div>
+        <div class="nav-group">
+          <div class="nav-label">Система</div>
+          <a class="nav-item" href="#/settings" data-nav="settings"><span data-icon="settings"></span><span>Настройки</span></a>
+        </div>
+      </nav>
+      <div class="sidebar-bottom">
+        <button type="button" class="btn btn-ghost btn-sm btn-icon" id="theme-toggle" aria-label="Тема оформления"></button>
+        <span class="version" id="app-version"></span>
+      </div>
+    </aside>
+    <div class="backdrop" id="backdrop" hidden></div>
+
+    <div class="main">
+      <header class="topbar">
+        <button type="button" class="btn btn-ghost btn-icon burger" id="burger" aria-label="Открыть меню" aria-controls="sidebar" aria-expanded="false"><span data-icon="menu"></span></button>
+        <div class="topbar-text">
+          <h1 id="page-title" tabindex="-1">Посты</h1>
+          <p class="topbar-sub" id="page-sub" hidden></p>
+        </div>
+        <div class="topbar-actions" id="page-actions"></div>
+        <button type="button" class="status-pill badge" id="status-pill" aria-label="Состояние бота"><span class="dot" aria-hidden="true"></span><span class="status-label">Проверка…</span></button>
+      </header>
+      <main id="view" class="content" tabindex="-1"></main>
+    </div>
+  </div>
+
+  <div id="login" class="login-screen" hidden>
+    <form class="login-card card" id="login-form" novalidate>
+      <div class="login-head">
+        <span class="product-logo" data-icon="newspaper"></span>
+        <div>
+          <h1 class="login-title">Вход в панель «Посты»</h1>
+          <p class="login-msg" id="login-msg">Панель защищена паролем.</p>
+        </div>
+      </div>
+      <label class="field">
+        <span class="label">Пароль</span>
+        <input class="input" type="password" id="login-password" name="password" autocomplete="current-password" required>
+      </label>
+      <p class="field-error" id="login-error" role="alert"></p>
+      <button class="btn btn-primary btn-block" type="submit" id="login-submit"><span>Войти</span></button>
+      <p class="hint" id="login-hint">Забыли пароль? Сбросьте его в боте: ⚙️ Настройки → «Сбросить пароль веб-панели».</p>
+    </form>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <noscript>
+    <p class="noscript">Для работы панели нужен JavaScript.</p>
+  </noscript>
+</body>
+</html>

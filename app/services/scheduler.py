@@ -260,7 +260,9 @@ class Scheduler:
             await asyncio.sleep(interval)
 
     async def _take_snapshots(self) -> None:
-        await channels.take_snapshots(self.bot, self.db)
+        # Half an interval: a restart right after a pass does not ask Telegram for every channel again
+        # (dozens of getChatMemberCount at once hit flood control), the regular hourly pass always runs.
+        await channels.take_snapshots(self.bot, self.db, min_age=self.snapshot_interval / 2)
 
     async def run_due_posts(self) -> int:
         """Publish the targets whose time has come, post by post. Returns the number of due posts

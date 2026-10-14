@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import pytest
-from aiogram.exceptions import TelegramNetworkError
-from aiogram.methods import GetChat
+from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter
+from aiogram.methods import GetChat, GetChatMemberCount
 from aiogram.types import Chat, ChatMemberAdministrator, ChatMemberLeft, User
 
-from app.db import CH_ACTIVE, CH_IGNORED, CH_LEFT, CH_PENDING
+from app.db import CH_ACTIVE, CH_IGNORED, CH_LEFT, CH_PENDING, now
 from app.services.channels import (
     INVITE_LINK_ERROR,
     NO_POST_RIGHT_ERROR,
@@ -243,6 +243,57 @@ async def test_take_snapshots(db, bot):
     assert (await db.get_channel(-1001))["members_count"] == 11
     assert await db.get_member_snapshots(-1002) == []
     assert await db.get_member_snapshots(-1003) == []
+
+
+def flood(chat_id, seconds):
+    return TelegramRetryAfter(method=GetChatMemberCount(chat_id=chat_id), message="Too Many Requests",
+                              retry_after=seconds)
+
+
+async def test_take_snapshots_retries_after_flood_control(db, bot, monkeypatch, caplog):
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("app.services.channels.asyncio.sleep", fake_sleep)
+    for cid in (-1001, -1002, -1003):
+        bot.add_chat(cid, str(cid), members=5)
+        await db.upsert_channel(cid, str(cid), None, status=CH_ACTIVE)
+    flooded = {-1002}
+
+    def fail(kw):
+        if kw["chat_id"] in flooded:
+            flooded.discard(kw["chat_id"])
+            return flood(kw["chat_id"], 20)
+        return None
+
+    bot.fail_on["get_chat_member_count"] = fail
+
+    assert await take_snapshots(bot, db, pause=0.3) == 3
+    assert 21 in sleeps and sleeps.count(0.3) == 2  # pauses between the 3 channels, then the flood wait
+    assert len(await db.get_member_snapshots(-1002)) == 1
+    assert "Traceback" not in caplog.text
+
+
+async def test_take_snapshots_gives_up_on_long_flood_wait(db, bot):
+    bot.add_chat(-1001, "A", members=5)
+    await db.upsert_channel(-1001, "A", None, status=CH_ACTIVE)
+    bot.fail_on["get_chat_member_count"] = flood(-1001, 600)
+
+    assert await take_snapshots(bot, db) == 0
+    assert len([c for c in bot.calls if c[0] == "get_chat_member_count"]) == 1
+
+
+async def test_take_snapshots_skips_fresh_channels(db, bot):
+    for cid in (-1001, -1002):
+        bot.add_chat(cid, str(cid), members=5)
+        await db.upsert_channel(cid, str(cid), None, status=CH_ACTIVE)
+    await db.add_member_snapshot(-1001, 4, ts=now() - 600)
+    await db.add_member_snapshot(-1002, 4, ts=now() - 4000)
+
+    assert await take_snapshots(bot, db, min_age=1800, pause=0) == 1
+    assert [c[1]["chat_id"] for c in bot.calls if c[0] == "get_chat_member_count"] == [-1002]
 
 
 # ------------------------------------------------------------------ on_bot_status_change

@@ -772,6 +772,11 @@ class Database:
             (channel_id, ts if ts is not None else now(), count),
         )
 
+    async def last_snapshot_times(self) -> dict[int, int]:
+        """Time of the latest subscriber-count snapshot of every channel that has one."""
+        rows = await self.fetchall("SELECT channel_id, MAX(ts) AS ts FROM member_snapshots GROUP BY channel_id")
+        return {int(r["channel_id"]): int(r["ts"]) for r in rows}
+
     async def get_member_snapshots(self, channel_id: int, since_ts: int = 0) -> list[dict]:
         return await self.fetchall(
             "SELECT ts, count FROM member_snapshots WHERE channel_id = ? AND ts >= ? ORDER BY ts",

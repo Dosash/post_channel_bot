@@ -3,6 +3,7 @@ member-count snapshots and reacting to the bot's own membership changes (`my_cha
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any
@@ -13,9 +14,10 @@ from aiogram.exceptions import (
     TelegramBadRequest,
     TelegramForbiddenError,
     TelegramNotFound,
+    TelegramRetryAfter,
 )
 
-from app.db import CH_ACTIVE, CH_IGNORED, CH_LEFT, CH_PENDING
+from app.db import CH_ACTIVE, CH_IGNORED, CH_LEFT, CH_PENDING, now
 
 log = logging.getLogger(__name__)
 
@@ -238,18 +240,55 @@ async def _mark_left(db: Any, channel: dict) -> dict:
                                    status=CH_LEFT, rights=NO_RIGHTS)
 
 
-async def take_snapshots(bot: Any, db: Any) -> int:
-    """Store a subscriber-count snapshot for every active channel. Returns how many were stored."""
-    stored = 0
-    for channel in await db.list_channels([CH_ACTIVE]):
-        try:
-            count = int(await bot.get_chat_member_count(chat_id=channel["id"]))
-            await db.add_member_snapshot(channel["id"], count)
-            if count != channel["members_count"]:
-                await db.update_channel(channel["id"], members_count=count)
-            stored += 1
-        except Exception:
-            log.warning("Snapshot of channel %s failed", channel["id"], exc_info=True)
+SNAPSHOT_PAUSE = 0.3  # seconds between getChatMemberCount calls: a burst over many channels hits flood control
+SNAPSHOT_RETRY_MAX_WAIT = 120  # a channel Telegram asks to wait longer for is skipped until the next pass
+
+
+async def take_snapshots(bot: Any, db: Any, *, min_age: float = 0, pause: float = SNAPSHOT_PAUSE) -> int:
+    """Store a subscriber-count snapshot for every active channel. Returns how many were stored.
+
+    Channels whose latest snapshot is younger than `min_age` seconds are skipped (a restart soon after
+    the previous pass does not ask Telegram again). Requests go one by one with a `pause`; channels hit
+    by flood control are retried once after the longest wait Telegram asked for (≤ 2 min). Failures are
+    logged one line each, not as tracebacks.
+    """
+    channels = await db.list_channels([CH_ACTIVE])
+    if min_age > 0:
+        last = await db.last_snapshot_times()
+        channels = [c for c in channels if last.get(int(c["id"]), 0) < now() - min_age]
+
+    async def run(batch: list[dict]) -> tuple[int, list[dict], int]:
+        """Snapshot `batch` one by one → (stored, channels hit by flood control, longest wait)."""
+        stored, throttled, wait = 0, [], 0
+        for i, channel in enumerate(batch):
+            if i and pause:
+                await asyncio.sleep(pause)
+            try:
+                count = int(await bot.get_chat_member_count(chat_id=channel["id"]))
+                await db.add_member_snapshot(channel["id"], count)
+                if count != channel["members_count"]:
+                    await db.update_channel(channel["id"], members_count=count)
+                stored += 1
+            except TelegramRetryAfter as exc:
+                throttled.append(channel)
+                wait = max(wait, int(exc.retry_after))
+            except TelegramAPIError as exc:
+                log.warning("Снимок подписчиков канала %s не получен: %s", channel["id"], exc.message)
+            except Exception:
+                log.warning("Snapshot of channel %s failed", channel["id"], exc_info=True)
+        return stored, throttled, wait
+
+    stored, throttled, wait = await run(channels)
+    if throttled and wait <= SNAPSHOT_RETRY_MAX_WAIT:
+        log.info("Снимок подписчиков: Telegram просит подождать %s с, повторю для %s каналов", wait, len(throttled))
+        await asyncio.sleep(wait + 1)
+        more, throttled, wait = await run(throttled)
+        stored += more
+    if throttled:
+        log.info("Снимок подписчиков: Telegram просит подождать %s с, %s каналов — в следующий раз",
+                 wait, len(throttled))
+    if stored < len(channels):
+        log.info("Снимок подписчиков: %s из %s каналов", stored, len(channels))
     return stored
 
 

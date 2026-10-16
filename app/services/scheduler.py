@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 from aiogram.types import LinkPreviewOptions
 
 from app.db import POST_FAILED, POST_PARTIAL, POST_SCHEDULED, POST_SENT, TARGET_PENDING, now
-from app.services import channels
+from app.services import avatars, channels
 from app.services.posting import (
     NO_TARGETS_ERROR,
     PostError,
@@ -263,6 +263,11 @@ class Scheduler:
         # Half an interval: a restart right after a pass does not ask Telegram for every channel again
         # (dozens of getChatMemberCount at once hit flood control), the regular hourly pass always runs.
         await channels.take_snapshots(self.bot, self.db, min_age=self.snapshot_interval / 2)
+        # Avatars for the panel: each channel once a day, never in the way of the snapshots.
+        try:
+            await avatars.sync_all(self.bot, self.db, self.config.uploads_dir)
+        except Exception:
+            log.warning("Avatar sync failed", exc_info=True)
 
     async def run_due_posts(self) -> int:
         """Publish the targets whose time has come, post by post. Returns the number of due posts

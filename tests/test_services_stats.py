@@ -8,7 +8,7 @@ import pytest
 
 from app.db import CH_ACTIVE, CH_PENDING
 from app.services.channels import ChannelError
-from app.services.stats import channel_stats, format_stats_html, overview, sparkline
+from app.services.stats import channel_stats, combined_stats, format_stats_html, overview, sparkline
 
 TZ = ZoneInfo("Asia/Tashkent")  # UTC+5, no DST
 CH = -1001000000001
@@ -248,3 +248,42 @@ async def test_fresh_posts_slightly_ahead_of_the_local_clock_are_counted(db):
     await db.add_channel_post(CH, 71, via_bot=False, ts=NOW_TS + 3600)  # really in the future
     stats = await channel_stats(db, CH, 1, TZ, now_ts=NOW_TS)
     assert (stats["posts"], stats["joins"]) == (1, 1)
+
+
+# ------------------------------------------------------------------ combined_stats
+
+CH2 = -1001000000002
+
+
+async def test_combined_stats_sums_channels(db):
+    await make_channel(db)
+    await db.upsert_channel(CH2, "Второй", None, status=CH_ACTIVE)
+    await db.add_member_snapshot(CH, 100, ts(4))
+    await db.add_member_snapshot(CH, 110, ts(13))
+    await db.add_member_snapshot(CH2, 50, ts(13, 9))  # tracked from 13.10 only
+    await db.add_member_snapshot(CH2, 53, ts(14, 9))
+    await db.add_member_event(CH, 1, "join", ts(13))
+    await db.add_member_event(CH2, 2, "join", ts(14, 9))
+    await db.add_member_event(CH2, 3, "leave", ts(14, 10))
+    await db.add_channel_post(CH, 1, True, ts(13))
+    await db.add_channel_post(CH2, 1, False, ts(14, 9))
+
+    stats = await combined_stats(db, [CH, CH2, CH, -100404], 3, TZ, now_ts=NOW_TS)
+
+    assert [d["members"] for d in stats["series"]] == [100, 160, 163]
+    assert stats["members_now"] == 163
+    assert stats["growth"] == 10 + 3  # per-channel growth, no jump when CH2 starts being tracked
+    assert stats["delta"]["1d"] == 3 + 0
+    assert stats["joins"] == 2 and stats["leaves"] == 1
+    assert stats["posts"] == 2 and stats["posts_bot"] == 1
+    assert [d["joins"] for d in stats["series"]] == [0, 1, 1]
+    assert stats["tracking_since"] == ts(4)
+    assert [c["channel"]["id"] for c in stats["channels"]] == [CH, CH2]
+    assert stats["channels"][1]["members_now"] == 53 and stats["channels"][1]["leaves"] == 1
+
+
+async def test_combined_stats_no_channels(db):
+    stats = await combined_stats(db, [], 2, TZ, now_ts=NOW_TS)
+    assert [d["date"] for d in stats["series"]] == ["2026-10-13", "2026-10-14"]
+    assert stats["members_now"] is None and stats["growth"] is None
+    assert stats["channels"] == [] and stats["top_posts"] == []

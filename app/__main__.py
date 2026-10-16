@@ -55,6 +55,7 @@ from app.config import (
 from app.db import CH_ACTIVE, CH_LEFT, POST_PARTIAL, POST_SCHEDULED, Database
 from app.services import channels as channels_service
 from app.services import posting
+from app.services import timezone as timezone_service
 from app.services.scheduler import Scheduler
 from app.web import create_web_app
 from app.web.auth import MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, fixed_password, get_password_hash
@@ -465,6 +466,7 @@ async def run(config: Config, runtime: Runtime | None = None, *,
         await db.connect()
         stack.push_async_callback(db.close)
         await db.migrate()
+        await timezone_service.load(db, config)
         recovered = await db.recover_stuck_sending()
         interrupted = [item for item in recovered if item["interrupted"]]
         if recovered:

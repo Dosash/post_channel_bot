@@ -157,6 +157,21 @@ async def test_channel_stats(client, db):
     assert resp.status == 404 and (await resp.json())["error"] == "Канал не найден"
 
 
+async def test_combined_stats(client, db):
+    await client.post("/api/channels", json={"ref": "@test_channel"}, headers=H)
+    await db.add_member_event(CHAN, 5, "join")
+    data = await (await client.get("/api/stats?days=7")).json()
+    assert data["days"] == 7 and len(data["series"]) == 7
+    assert data["members_now"] == 42 and data["joins"] == 1
+    assert [c["channel"]["link"] for c in data["channels"]] == ["https://t.me/test_channel"]
+
+    data = await (await client.get(f"/api/stats?channels={CHAN},-100404")).json()
+    assert data["days"] == 30 and len(data["channels"]) == 1
+
+    resp = await client.get("/api/stats?channels=-100404,abc")
+    assert resp.status == 404 and (await resp.json())["error"] == "Каналы не найдены"
+
+
 # ------------------------------------------------------------------ overview / settings
 
 async def test_overview(client, bot, config):
@@ -222,6 +237,9 @@ async def test_settings(client, config):
     data = await (await client.get("/api/settings")).json()
     assert data["slots_help"].startswith("Расписание")
     del data["slots_help"]
+    assert len(data.pop("timezones")) > 10
+    assert data.pop("timezone_label") == data.pop("timezone_env_label") == "Asia/Tashkent (UTC+5)"
+    assert data.pop("timezone_env") == "Asia/Tashkent" and data.pop("timezone_source") == "env"
     assert data == {"password_set": False, "password_fixed": False, "password_source": None,
                     "timezone": "Asia/Tashkent", "web_url": "http://127.0.0.1:8080/", "web_prefix": "",
                     "hub_url": None, "version": __version__,
@@ -322,3 +340,33 @@ async def test_broken_slots_json_does_not_break_the_list(client, db):
     await db.update_channel(CHAN, slots_json='{"9": ["25:00"]}')
     channel = (await _channels(client))[0]
     assert channel["slots_summary"] == "не настроено"
+
+
+async def test_set_timezone(client, db, config):
+    resp = await client.put("/api/settings/timezone", json={"timezone": "europe/moscow"}, headers=H)
+    data = await resp.json()
+    assert resp.status == 200, data
+    assert data["timezone"] == "Europe/Moscow" and data["timezone_source"] == "settings"
+    assert str(config.tz) == "Europe/Moscow" and await db.get_setting("timezone") == "Europe/Moscow"
+    assert (await (await client.get("/api/settings")).json())["timezone"] == "Europe/Moscow"
+
+    resp = await client.put("/api/settings/timezone", json={"timezone": "Mars/Base"}, headers=H)
+    assert resp.status == 400 and "Неизвестный часовой пояс" in (await resp.json())["error"]
+    assert str(config.tz) == "Europe/Moscow"
+    assert (await client.put("/api/settings/timezone", json={"timezone": 5}, headers=H)).status == 400
+
+    data = await (await client.put("/api/settings/timezone", json={"timezone": None}, headers=H)).json()
+    assert data["timezone"] == "Asia/Tashkent" and data["timezone_source"] == "env"
+    assert await db.get_setting("timezone") is None
+
+
+async def test_channel_avatar(client, db, bot, config):
+    await client.post("/api/channels", json={"ref": "@test_channel"}, headers=H)
+    assert (await client.get(f"/api/channels/{CHAN}/avatar")).status == 404
+    bot.chats[CHAN]["photo"] = "ph"
+    data = await (await client.post(f"/api/channels/{CHAN}/refresh", headers=H)).json()
+    assert data["channel"]["photo_id"] == "ph_su"
+    resp = await client.get(f"/api/channels/{CHAN}/avatar?v=ph_su")
+    assert resp.status == 200 and resp.headers["Content-Type"] == "image/jpeg"
+    assert "max-age" in resp.headers["Cache-Control"]
+    assert (await resp.read()).startswith(b"\xff\xd8")

@@ -154,6 +154,7 @@ CHANNEL_FIELDS = {
     "title", "username", "status", "can_post", "can_edit", "can_delete",
     "members_count", "added_by", "added_at", "updated_at",
     "folder_id", "slots_json",  # V2
+    "photo_id", "photo_checked_at",  # V2.6: avatar (app.services.avatars)
 }
 
 
@@ -879,6 +880,7 @@ class Database:
               into media_json and (once, when the column appears) of scheduled posts' time into
               their pending targets.
         V2.3: post_targets.sending_at — in-flight marker of a send (see recover_stuck_sending).
+        V2.6: channels.photo_id / photo_checked_at — the channel avatar (app.services.avatars).
         """
         if getattr(self, "_migrated_conn", None) is self._conn and self._conn is not None:
             return
@@ -890,6 +892,8 @@ class Database:
         await self.ensure_column("post_targets", "queued", "INTEGER NOT NULL DEFAULT 0")
         await self.ensure_column("post_targets", "message_ids_json", "TEXT")
         await self.ensure_column("channel_posts", "media_group_id", "TEXT")
+        await self.ensure_column("channels", "photo_id", "TEXT")
+        await self.ensure_column("channels", "photo_checked_at", "INTEGER")
         await self.ensure_column("post_targets", "media_sig", "TEXT")
         if await self.ensure_column("post_targets", "sending_at", "INTEGER"):
             # Posts left 'sending' by a version without the in-flight marker: any due pending target

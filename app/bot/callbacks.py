@@ -143,3 +143,10 @@ class SettingsCb(CallbackData, prefix="se"):
     """Settings screen actions: show, reset, reset_ok, premium (toggle premium emoji, SPEC_V23)."""
 
     action: str
+
+
+class TimezoneCb(CallbackData, prefix="tz"):
+    """Timezone choice: i — index in app.services.timezone.COMMON; -1 — back to TIMEZONE from .env;
+    -2 — show the list."""
+
+    i: int

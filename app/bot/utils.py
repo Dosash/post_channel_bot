@@ -50,8 +50,12 @@ def fmt_num(value: int | None) -> str:
 
 
 def tz_name(tz: Any) -> str:
-    """'Asia/Tashkent' for a ZoneInfo."""
-    return getattr(tz, "key", None) or str(tz)
+    """'Asia/Tashkent' for a ZoneInfo; a bare offset zone (Etc/GMT-3) as 'UTC+3'."""
+    key = getattr(tz, "key", None) or str(tz)
+    if key.startswith("Etc/"):
+        from app.services.timezone import offset_text
+        return offset_text(tz)
+    return key
 
 
 def fmt_short(ts: int | None, tz: Any) -> str:

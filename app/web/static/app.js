@@ -485,10 +485,38 @@
 
   const AVATAR_COLORS = 7;
 
+  /** channel id → photo id of its avatar (from every channel list the panel loads). */
+  const channelPhotos = new Map();
+  let channelPhotosLoaded = false;
+
+  function rememberPhotos(list) {
+    list.forEach((c) => {
+      if (c && c.id !== undefined) channelPhotos.set(num(c.id), c.photo_id || '');
+    });
+    channelPhotosLoaded = true;
+  }
+
+  /** Before the first page: avatars of channels shown by pages that do not load the channel list. */
+  async function ensureChannelPhotos() {
+    if (channelPhotosLoaded) return;
+    try {
+      const data = await api.get('api/channels');
+      rememberPhotos(Array.isArray(data.channels) ? data.channels : []);
+    } catch (err) {
+      if (err.silent) throw err;
+      channelPhotosLoaded = true; // letters then
+    }
+  }
+
+  /** The channel photo over its coloured letter; the letter stays when there is no photo. */
   function avatarHtml(id, title, size = '') {
     const letter = Array.from(String(title || '').trim())[0] || '#';
     const color = Math.abs(num(id)) % AVATAR_COLORS;
-    return `<span class="avatar av-${color}${size ? ` ${size}` : ''}" aria-hidden="true">${esc(letter.toUpperCase())}</span>`;
+    const photo = channelPhotos.get(num(id));
+    const img = photo
+      ? `<img class="avatar-img" src="api/channels/${num(id)}/avatar?v=${encodeURIComponent(photo)}" alt="" loading="lazy" decoding="async">`
+      : '';
+    return `<span class="avatar av-${color}${size ? ` ${size}` : ''}" aria-hidden="true">${esc(letter.toUpperCase())}${img}</span>`;
   }
 
   function channelLink(ch) {
@@ -669,6 +697,7 @@
   async function loadChannels() {
     const data = await api.get('api/channels');
     const list = Array.isArray(data.channels) ? data.channels : [];
+    rememberPhotos(list);
     updatePendingBadge(list.filter((c) => c.status === 'pending').length);
     return list;
   }
@@ -694,6 +723,7 @@
         channels: Array.isArray(g.channels) ? g.channels : [],
       }));
     const channels = groups.flatMap((g) => g.channels);
+    rememberPhotos(channels);
     updatePendingBadge(channels.filter((c) => c.status === 'pending').length);
     return { groups, channels, folders: groups.filter((g) => g.folder).map((g) => g.folder) };
   }
@@ -1285,6 +1315,8 @@
 
     const ctx = { alive: () => token === state.routeToken };
     try {
+      await ensureChannelPhotos();
+      if (!ctx.alive()) return;
       await page.render(root, r, ctx);
     } catch (err) {
       if (!ctx.alive() || err.silent) return;
@@ -1379,6 +1411,10 @@
 
   function onMediaError(e) {
     const el = e.target;
+    if (el instanceof HTMLImageElement && el.classList.contains('avatar-img')) {
+      el.remove(); // the avatar is gone: its letter shows
+      return;
+    }
     if (!(el instanceof HTMLElement) || !el.hasAttribute('data-media')) return;
     if (el.tagName === 'VIDEO' && !el.dataset.fallback) {
       // An animation may be stored as a real GIF file: try it as an image.
@@ -3904,17 +3940,30 @@
     let offset = 0;
     let total = 0;
     let posts = [];
+    let folders = [];
+    const openGroups = new Set(); // expanded folder groups survive re-rendering the list
+    listEl.addEventListener('toggle', (e) => {
+      const key = e.target.dataset && e.target.dataset.openKey;
+      if (!key) return;
+      if (e.target.open) openGroups.add(key);
+      else openGroups.delete(key);
+    }, true);
 
     async function load(reset) {
       if (reset) {
         offset = 0;
         posts = [];
       }
-      const [data] = await Promise.all([
+      const [data, folderData] = await Promise.all([
         api.get(`api/posts?status=${status}&limit=${POSTS_PAGE}&offset=${offset}`),
+        api.get('api/folders').catch((err) => {
+          if (err.silent) throw err;
+          return null; // folder names are optional: groups then show without them
+        }),
         ensureServerTz(),
       ]);
       if (!ctx.alive()) return;
+      if (folderData && Array.isArray(folderData.folders)) folders = folderData.folders;
       const chunk = Array.isArray(data.posts) ? data.posts : [];
       total = Number(data.total) || 0;
       posts = posts.concat(chunk);
@@ -3928,7 +3977,7 @@
         moreEl.innerHTML = '';
         return;
       }
-      listEl.innerHTML = posts.map(postCardHtml).join('');
+      listEl.innerHTML = posts.map((p) => postCardHtml(p, folders, openGroups)).join('');
       moreEl.innerHTML = `<span class="muted small">Показано ${posts.length} из ${Math.max(total, posts.length)}</span>${
         posts.length < total ? '<button type="button" class="btn btn-secondary" data-action="more">Показать ещё</button>' : ''}`;
     }
@@ -3938,6 +3987,12 @@
 
     onAction(root, {
       more: (el) => busy(el, () => load(false)),
+      'tchips-more': (el) => {
+        const box = el.closest('.tchips');
+        const opened = box.classList.toggle('is-open');
+        el.setAttribute('aria-expanded', String(opened));
+        el.textContent = opened ? 'Свернуть' : el.dataset.more;
+      },
       refresh: () => reload(),
       publish: async (el) => {
         const p = findPost(el);
@@ -4084,7 +4139,58 @@
       : `<span class="${cls}" title="${esc(title)}">${inner}</span>`;
   }
 
-  function postCardHtml(p) {
+  const TCHIPS_VISIBLE = 5;
+
+  /** Chip list; over TCHIPS_VISIBLE chips the rest hide behind «Показать все». */
+  function tchipsHtml(targets, limit = 0) {
+    const extra = limit && targets.length > limit + 1 ? targets.length - limit : 0;
+    const chips = targets.map((t, i) => {
+      const html = targetChipHtml(t);
+      return extra && i >= limit ? html.replace(/^<(a|span) class="/, '<$1 class="is-extra ') : html;
+    }).join('');
+    const more = extra
+      ? `<button type="button" class="tchips-more" data-action="tchips-more" aria-expanded="false" data-more="Ещё ${extra}">Ещё ${extra}</button>`
+      : '';
+    return `<div class="tchips">${chips}${more}</div>`;
+  }
+
+  const TARGET_COUNTS = [['sent', 'вышел', 'вышли', 'вышли'], ['pending', 'в плане', 'в плане', 'в плане'], ['failed', 'ошибка', 'ошибки', 'ошибок']];
+
+  /**
+   * Channels of a post. All in one folder (or no folders) — a plain list, the first five shown;
+   * several folders — a collapsed group per folder with its status counts. `folders` gives names
+   * and order; `open` keeps the groups the user expanded (keys "postId:folderKey").
+   */
+  function postTargetsHtml(p, folders, open) {
+    const targets = p.targets || [];
+    if (!targets.length) return '<p class="hint">Каналы не выбраны</p>';
+    const byKey = new Map();
+    targets.forEach((t) => {
+      const key = t.folder_id === null || t.folder_id === undefined ? 'none' : `f${num(t.folder_id)}`;
+      if (!byKey.has(key)) byKey.set(key, []);
+      byKey.get(key).push(t);
+    });
+    if (byKey.size < 2) return tchipsHtml(targets, TCHIPS_VISIBLE);
+    const order = folders.map((f) => `f${num(f.id)}`);
+    const rank = (key) => (key === 'none' ? Infinity : order.indexOf(key) === -1 ? order.length : order.indexOf(key));
+    const names = new Map(folders.map((f) => [`f${num(f.id)}`, f.name || 'Папка']));
+    return `<div class="tgroups">${[...byKey.entries()]
+      .sort((a, b) => rank(a[0]) - rank(b[0]))
+      .map(([key, list]) => {
+        const name = key === 'none' ? 'Без папки' : names.get(key) || 'Папка';
+        const counts = TARGET_COUNTS.map(([status, ...forms]) => {
+          const n = list.filter((t) => t.status === status).length;
+          return n ? `<span class="tg-count t-${status}"><span class="dot" aria-hidden="true"></span>${n} ${esc(plural(n, forms))}</span>` : '';
+        }).join('');
+        const openKey = `${num(p.id)}:${key}`;
+        return `<details class="tgroup" data-open-key="${esc(openKey)}"${open.has(openKey) ? ' open' : ''}>
+          <summary>${icon('down')}${icon('folder')}<span class="tg-name">${esc(name)}</span><span class="count">${list.length}</span>${counts}</summary>
+          ${tchipsHtml(list)}
+        </details>`;
+      }).join('')}</div>`;
+  }
+
+  function postCardHtml(p, folders = [], open = new Set()) {
     const targets = p.targets || [];
     const media = postMedia(p);
     const reactions = targets.reduce((sum, t) => sum + (Number(t.reactions_total) || 0), 0);
@@ -4098,7 +4204,7 @@
       <div class="post-body">
         <div class="post-meta">${statusBadge(p.status)}<span>${esc(postTimeText(p))}</span><span class="muted">#${num(p.id)}</span>${extras.join('')}</div>
         <p class="post-excerpt">${esc(postExcerpt(p))}</p>
-        ${targets.length ? `<div class="tchips">${targets.map(targetChipHtml).join('')}</div>` : '<p class="hint">Каналы не выбраны</p>'}
+        ${postTargetsHtml(p, folders, open)}
         ${p.error && (p.status === 'failed' || p.status === 'partial') ? `<p class="post-error">${icon('alert')}<span>${esc(p.error)}</span></p>` : ''}
         <div class="post-actions">${postActionsHtml(p).filter(Boolean).join('')}</div>
       </div>
@@ -5124,45 +5230,129 @@
 
   const PERIODS = [7, 30, 90];
   const CHART_H = 220;
+  const STATS_CHANNELS_KEY = 'pcb.statsChannels';
+  const CHANNELS_FORMS = ['канал', 'канала', 'каналов'];
 
+  /**
+   * Statistics page. Without a channel in the URL — all channels summed up; the picker narrows it
+   * down to some channels or folders (#/stats?ch=1,2), #/stats/<id> — one channel.
+   */
   async function pageStats(root, r, ctx) {
     setPageTitle('Статистика');
-    const [all] = await Promise.all([loadChannels(), ensureServerTz()]);
+    const [grouped] = await Promise.all([loadGrouped(), ensureServerTz()]);
     if (!ctx.alive()) return;
-    const channels = all.filter((c) => c.status === 'active' || c.status === 'left');
+    const usable = (c) => c.status === 'active' || c.status === 'left';
+    const groups = grouped.groups
+      .map((g) => ({ folder: g.folder, channels: g.channels.filter(usable) }))
+      .filter((g) => g.channels.length);
+    const channels = groups.flatMap((g) => g.channels);
     if (!channels.length) {
       root.innerHTML = `${pageHead('Статистика')}${emptyState('chart', 'Нет каналов для статистики', 'Подключите канал — бот начнёт собирать данные о подписчиках, вступлениях и постах.', '<a class="btn btn-primary" href="#/channels">Перейти к каналам</a>')}`;
       return;
     }
-    let channelId = num(r.segs[1]) || num(channels[0].id);
-    if (!channels.some((c) => num(c.id) === channelId)) channelId = num(channels[0].id);
+    const allIds = channels.map((c) => num(c.id));
+    const known = (ids) => ids.filter((id) => allIds.includes(id));
+    const parseIds = (text) => known(String(text || '').split(',').map(num).filter(Boolean));
+
+    let selected;
+    if (r.segs[1]) selected = known([num(r.segs[1])]);
+    else if (r.query.has('ch')) selected = parseIds(r.query.get('ch'));
+    else if (storageGet(STATS_CHANNELS_KEY)) selected = parseIds(storageGet(STATS_CHANNELS_KEY));
+    if (!selected || !selected.length) selected = allIds.slice();
+    let picked = new Set(selected);
     let days = PERIODS.includes(num(r.query.get('days'))) ? num(r.query.get('days')) : 30;
 
-    const options = channels.map((c) => `<option value="${num(c.id)}"${num(c.id) === channelId ? ' selected' : ''}>${esc(c.title || 'Без названия')}${c.status !== 'active' ? ' (нет доступа)' : ''}</option>`).join('');
+    const chipFor = (c) => {
+      const id = num(c.id);
+      return `<label class="chip${picked.has(id) ? ' on' : ''}">
+        <input type="checkbox" data-channel="${id}"${picked.has(id) ? ' checked' : ''}>
+        ${avatarHtml(c.id, c.title, 'xs')}<span class="chip-text">${esc(c.title || 'Без названия')}${c.status !== 'active' ? ' (нет доступа)' : ''}</span>
+        <span class="chip-check">${icon('check')}</span>
+      </label>`;
+    };
+    const pickerBody = groups.some((g) => g.folder)
+      ? groups.map((g) => {
+        const name = g.folder ? g.folder.name || 'Папка' : 'Без папки';
+        return `<div class="chip-group" role="group" aria-label="${esc(name)}">
+          <label class="chip-folder"><input type="checkbox" data-folder-toggle>
+            ${icon('folder')}<span class="chip-folder-name">${esc(name)}</span><span class="count" data-folder-count></span>
+            <span class="sr-only"> — выбрать все каналы папки</span></label>
+          <div class="chips">${g.channels.map(chipFor).join('')}</div>
+        </div>`;
+      }).join('')
+      : `<div class="chips" role="group" aria-label="Каналы">${channels.map(chipFor).join('')}</div>`;
     const periods = PERIODS.map((d) => `<button type="button" class="seg" data-days="${d}" aria-pressed="${d === days}">${d} дней</button>`).join('');
+    const multi = channels.length > 1;
     root.innerHTML = `
       ${pageHead('Статистика', { subtitle: 'Подписчики, вступления, посты и реакции по дням' })}
       <div class="stats-controls">
-        <label class="field stats-select"><span class="sr-only">Канал</span>
-          <select class="input" id="st-channel" aria-label="Канал">${options}</select></label>
+        ${multi ? `<details class="st-picker" id="st-picker">
+          <summary class="btn btn-secondary">${icon('channels')}<span id="st-picker-label"></span>${icon('down')}</summary>
+          <div class="st-picker-panel card">
+            <div class="chips-tools st-picker-tools"><button type="button" class="btn btn-ghost btn-sm" data-pick="all">Все каналы</button><button type="button" class="btn btn-ghost btn-sm" data-pick="none">Снять все</button></div>
+            ${pickerBody}
+          </div>
+        </details>` : ''}
         <div class="segmented" role="group" aria-label="Период">${periods}</div>
       </div>
       <div id="st-body"></div>`;
 
     const body = $('#st-body', root);
+    const picker = $('#st-picker', root);
     let loadSeq = 0;
     let lastSeries = null;
 
+    function syncPicker() {
+      if (!picker) return;
+      $$('input[data-channel]', picker).forEach((input) => {
+        input.checked = picked.has(num(input.dataset.channel));
+        input.closest('.chip').classList.toggle('on', input.checked);
+      });
+      $$('.chip-group', picker).forEach((group) => {
+        const inputs = $$('input[data-channel]', group);
+        const k = inputs.filter((i) => i.checked).length;
+        const toggle = $('[data-folder-toggle]', group);
+        toggle.checked = k === inputs.length;
+        toggle.indeterminate = k > 0 && k < inputs.length;
+        $('[data-folder-count]', group).textContent = `${k}/${inputs.length}`;
+      });
+      const n = picked.size;
+      let label;
+      if (n === allIds.length) label = `Все каналы · ${n}`;
+      else if (n === 1) label = channels.find((c) => picked.has(num(c.id))).title || 'Без названия';
+      else {
+        const folder = groups.find((g) => g.folder && g.channels.length === n && g.channels.every((c) => picked.has(num(c.id))));
+        label = folder ? `Папка «${folder.folder.name || 'Папка'}» · ${n}` : `${n} ${plural(n, CHANNELS_FORMS)} из ${allIds.length}`;
+      }
+      $('#st-picker-label', picker).textContent = n ? label : 'Каналы не выбраны';
+    }
+
     async function load() {
-      replaceHash(`#/stats/${channelId}${days !== 30 ? `?days=${days}` : ''}`);
+      const ids = allIds.filter((id) => picked.has(id));
+      const all = ids.length === allIds.length;
+      const q = days !== 30 ? `days=${days}` : '';
+      let hash;
+      if (all) hash = `#/stats${q ? `?${q}` : ''}`;
+      else if (ids.length === 1) hash = `#/stats/${ids[0]}${q ? `?${q}` : ''}`;
+      else hash = `#/stats?ch=${ids.join(',')}${q ? `&${q}` : ''}`;
+      replaceHash(hash);
+      if (multi && ids.length) storageSet(STATS_CHANNELS_KEY, all ? null : ids.join(','));
       const seq = ++loadSeq;
+      lastSeries = null;
+      if (!ids.length) {
+        body.innerHTML = emptyState('channels', 'Каналы не выбраны', 'Отметьте один или несколько каналов, чтобы увидеть их статистику.');
+        return;
+      }
       body.innerHTML = loadingHtml(3);
       try {
-        const data = await api.get(`api/channels/${channelId}/stats?days=${days}`);
+        const single = ids.length === 1;
+        const data = single
+          ? await api.get(`api/channels/${ids[0]}/stats?days=${days}`)
+          : await api.get(`api/stats?days=${days}${all ? '' : `&channels=${ids.join(',')}`}`);
         if (seq !== loadSeq || !ctx.alive()) return;
         const stats = data && Array.isArray(data.series) ? data : unwrap(data, 'stats');
         lastSeries = Array.isArray(stats.series) ? stats.series : [];
-        renderStats(body, stats, days);
+        renderStats(body, stats, days, single ? null : (all ? 'all' : 'some'));
         drawCharts(body, lastSeries);
       } catch (err) {
         if (seq !== loadSeq || !ctx.alive() || err.silent) return;
@@ -5171,11 +5361,45 @@
         if (retry) retry.addEventListener('click', () => load());
       }
     }
+    const loadSoon = debounce(load, 350);
 
-    $('#st-channel', root).addEventListener('change', (e) => {
-      channelId = num(e.target.value);
-      load();
-    });
+    if (picker) {
+      syncPicker();
+      picker.addEventListener('change', (e) => {
+        const t = e.target;
+        if (t.matches('[data-folder-toggle]')) {
+          const ids = $$('input[data-channel]', t.closest('.chip-group')).map((i) => num(i.dataset.channel));
+          ids.forEach((id) => (t.checked ? picked.add(id) : picked.delete(id)));
+        } else if (t.matches('input[data-channel]')) {
+          const id = num(t.dataset.channel);
+          if (t.checked) picked.add(id);
+          else picked.delete(id);
+        } else return;
+        syncPicker();
+        loadSoon();
+      });
+      picker.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-pick]');
+        if (!btn) return;
+        picked = new Set(btn.dataset.pick === 'all' ? allIds : []);
+        syncPicker();
+        loadSoon();
+      });
+      const closeOutside = (e) => {
+        if (!ctx.alive()) {
+          document.removeEventListener('click', closeOutside);
+          return;
+        }
+        if (picker.open && !picker.contains(e.target)) picker.open = false;
+      };
+      document.addEventListener('click', closeOutside);
+      picker.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && picker.open) {
+          picker.open = false;
+          $('summary', picker).focus();
+        }
+      });
+    }
     $('.segmented', root).addEventListener('click', (e) => {
       const btn = e.target.closest('[data-days]');
       if (!btn) return;
@@ -5214,7 +5438,7 @@
     }).filter(Boolean).join('  ');
   }
 
-  function topPostsHtml(top) {
+  function topPostsHtml(top, withChannel = false) {
     if (!Array.isArray(top) || !top.length) {
       return '<p class="hint card-pad">Здесь появятся посты, опубликованные через бота, с наибольшим числом реакций.</p>';
     }
@@ -5223,7 +5447,8 @@
       const text = esc(t.excerpt || 'Пост без текста');
       return `<tr>
         <td class="top-text">${href ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${text}</a>` : text}
-          ${t.post_id ? ` <a class="muted small" href="#/compose/${num(t.post_id)}">#${num(t.post_id)}</a>` : ''}</td>
+          ${t.post_id ? ` <a class="muted small" href="#/compose/${num(t.post_id)}">#${num(t.post_id)}</a>` : ''}
+          ${withChannel && t.channel_title ? `<div class="muted small">${esc(t.channel_title)}</div>` : ''}</td>
         <td class="nowrap">${esc(fmtDateTime(t.sent_at))}</td>
         <td class="num"><b>${fmtNum(t.reactions_total)}</b><div class="muted small">${esc(reactionsBreakdown(t.reactions))}</div></td>
       </tr>`;
@@ -5233,10 +5458,41 @@
       <tbody>${rows}</tbody></table></div>`;
   }
 
-  function renderStats(body, s, days) {
+  /** Per-channel breakdown of the combined statistics, biggest channels first. */
+  function channelsBreakdownHtml(list, days) {
+    const rows = list.slice()
+      .sort((a, b) => (Number(b.members_now) || 0) - (Number(a.members_now) || 0))
+      .map((it) => {
+        const ch = it.channel || {};
+        const growth = it.growth === null || it.growth === undefined ? '—' : deltaHtml(it.growth);
+        return `<tr>
+          <td><a class="st-ch" href="#/stats/${num(ch.id)}${days !== 30 ? `?days=${days}` : ''}">${avatarHtml(ch.id, ch.title, 'xs')}<span>${esc(ch.title || 'Без названия')}</span></a></td>
+          <td class="num">${fmtNum(it.members_now)}</td>
+          <td class="num">${growth}</td>
+          <td class="num">${fmtNum(it.joins)}</td>
+          <td class="num">${fmtNum(it.leaves)}</td>
+          <td class="num">${fmtNum(it.posts)}</td>
+          <td class="num">${fmtNum(it.reactions)}</td>
+        </tr>`;
+      }).join('');
+    return `<section class="card flush section">
+      <div class="card-head"><h2>По каналам</h2><span class="muted small">за ${days} дней</span></div>
+      <div class="table-wrap"><table class="table st-table">
+        <thead><tr><th scope="col">Канал</th><th scope="col" class="num">Подписчики</th><th scope="col" class="num">Прирост</th>
+          <th scope="col" class="num">Вступили</th><th scope="col" class="num">Отписались</th><th scope="col" class="num">Посты</th><th scope="col" class="num">Реакции</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>
+    </section>`;
+  }
+
+  /** `scope`: null — one channel, 'all' — every channel summed up, 'some' — the picked channels. */
+  function renderStats(body, s, days, scope = null) {
     const series = Array.isArray(s.series) ? s.series : [];
     const known = series.filter((d) => d.members !== null && d.members !== undefined);
-    const growth = known.length >= 2 ? Number(known[known.length - 1].members) - Number(known[0].members) : null;
+    const growth = s.growth !== undefined
+      ? s.growth
+      : known.length >= 2 ? Number(known[known.length - 1].members) - Number(known[0].members) : null;
+    const where = scope === 'all' ? 'во всех каналах' : scope ? 'в выбранных каналах' : '';
+    const breakdown = scope && Array.isArray(s.channels) && s.channels.length ? channelsBreakdownHtml(s.channels, days) : '';
     const delta7 = s.delta ? s.delta['7d'] : null;
     const since = fmtDate(s.tracking_since); // ru-RU dates already end with "г."
     const tracking = s.tracking_since
@@ -5245,14 +5501,14 @@
 
     body.innerHTML = `
       <section class="tiles" aria-label="Показатели за период">
-        ${kpiHtml({ label: 'Подписчики', value: fmtNum(s.members_now), extra: `${deltaHtml(delta7)} за 7 дней` })}
+        ${kpiHtml({ label: 'Подписчики', value: fmtNum(s.members_now), extra: `${deltaHtml(delta7)} за 7 дней${where ? ` · ${where}` : ''}` })}
         ${kpiHtml({ label: 'Прирост', value: growth === null ? '—' : `<span class="delta-big ${growth > 0 ? 'up' : growth < 0 ? 'down' : ''}">${esc(fmtSigned(growth))}</span>`, sub: `за ${days} дней` })}
         ${kpiHtml({ label: 'Вступили', value: fmtNum(s.joins), sub: `за ${days} дней` })}
         ${kpiHtml({ label: 'Отписались', value: fmtNum(s.leaves), sub: `за ${days} дней` })}
         ${kpiHtml({ label: 'Посты', value: `${fmtNum(s.posts)}<span class="tile-slash"> / ${fmtNum(s.posts_bot)}</span>`, sub: 'всего / через бота' })}
         ${kpiHtml({ label: 'Реакции', value: fmtNum(s.reactions), sub: 'на постах бота' })}
       </section>
-      <p class="note">${icon('info')}<span>${tracking} Вступления и отписки учитываются, пока бот — администратор канала.</span></p>
+      <p class="note">${icon('info')}<span>${tracking} Вступления и отписки учитываются, пока бот — администратор канала.${scope ? ' На графике подписчиков сложены каналы, по которым на этот день есть данные.' : ''}</span></p>
 
       <div class="charts">
         <section class="card chart-card chart-wide">
@@ -5273,8 +5529,9 @@
 
       <section class="card flush section">
         <div class="card-head"><h2>Лучшие посты по реакциям</h2></div>
-        ${topPostsHtml(s.top_posts)}
+        ${topPostsHtml(s.top_posts, Boolean(scope))}
       </section>
+      ${breakdown}
       <p class="note">${icon('eye')}<span>Количество просмотров через Telegram Bot API недоступно — смотрите его в самом Telegram, в статистике канала.</span></p>`;
   }
 
@@ -5471,6 +5728,7 @@
       <div class="settings-grid">
         ${botCardHtml(botState)}
         ${premium === null ? '' : premiumCardHtml(premium)}
+        ${Array.isArray(settings.timezones) ? timezoneCardHtml(settings) : ''}
         ${passwordCardHtml(Boolean(settings.password_set), settings.password_source)}
         <section class="card">
           <div class="card-head"><h2>${icon('users')}Администраторы</h2><span class="muted small">${admins.length}</span></div>
@@ -5486,11 +5744,11 @@
         <section class="card">
           <div class="card-head"><h2>${icon('info')}О панели</h2></div>
           <dl class="kv">
-            <dt>Часовой пояс</dt><dd>${esc(settings.timezone || (overview && overview.timezone) || '—')}</dd>
+            <dt>Часовой пояс</dt><dd>${esc(settings.timezone_label || settings.timezone || (overview && overview.timezone) || '—')}</dd>
             <dt>Адрес панели</dt><dd class="url-cell"><code>${esc(webUrl || '—')}</code>${webUrl ? `<button type="button" class="btn btn-ghost btn-sm" data-action="copy-url">${icon('copy')}<span>Копировать</span></button>` : ''}</dd>
             <dt>Версия</dt><dd>${version ? `v${esc(version)}` : '—'}</dd>
           </dl>
-          <p class="hint">Часовой пояс и адрес панели задаются в файле .env (TIMEZONE, WEB_PUBLIC_URL, WEB_PREFIX).</p>
+          <p class="hint">Адрес панели задаётся в файле .env (WEB_PUBLIC_URL, WEB_PREFIX).</p>
         </section>
         <section class="card">
           <div class="card-head"><h2>${icon('palette')}Оформление</h2></div>
@@ -5545,6 +5803,12 @@
         rerender();
       },
       'bot-token': (form) => changeBot(form, botState, rerender),
+      'tz-set': async (form) => {
+        const choice = form.elements.namedItem('tz').value;
+        const name = choice === 'other' ? form.elements.namedItem('tz_other').value.trim() : choice;
+        if (!name) throw new ValidationError('Укажите часовой пояс, например Europe/Moscow или UTC+3', '#tz-set [name="tz_other"]');
+        await saveTimezone(name, rerender);
+      },
     });
 
     onAction(root, {
@@ -5576,9 +5840,15 @@
         toast(ok ? 'Адрес скопирован' : 'Не удалось скопировать — выделите адрес вручную', ok ? 'success' : 'error');
       },
       theme: (el) => setTheme(el.dataset.theme),
+      'tz-env': () => saveTimezone(null, rerender, settings.timezone_env_label),
     });
 
     root.addEventListener('change', (e) => {
+      if (e.target.matches('#tz-set [name="tz"]')) {
+        const other = $('#tz-other', root);
+        other.hidden = e.target.value !== 'other';
+        if (!other.hidden) $('input', other).focus();
+      }
       const input = e.target.closest('[data-premium-emoji]');
       if (input) savePremiumEmoji(input);
     });
@@ -5595,6 +5865,61 @@
         if (toggle) toggle.focus({ preventScroll: true });
       }
     }
+  }
+
+  // ---- settings: the bot's timezone (setting over TIMEZONE from .env)
+
+  function timezoneCardHtml(settings) {
+    const current = settings.timezone || '';
+    const fromSetting = settings.timezone_source === 'settings';
+    const list = settings.timezones;
+    const known = list.some((z) => z.name === current);
+    let zones = [];
+    try {
+      zones = Intl.supportedValuesOf('timeZone');
+    } catch {
+      /* old browser: the field still accepts any name */
+    }
+    const options = list.map((z) => `<option value="${esc(z.name)}"${z.name === current ? ' selected' : ''}>${esc(z.label)} — ${esc(z.offset)}${z.name === 'UTC' ? '' : ` · ${esc(z.name)}`}</option>`).join('');
+    const now = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: current || 'UTC' });
+    let nowText = '';
+    try {
+      nowText = now.format(new Date());
+    } catch {
+      nowText = '';
+    }
+    return `<section class="card" id="timezone-card" aria-labelledby="tz-title">
+      <div class="card-head"><h2 id="tz-title">${icon('clock')}Часовой пояс</h2>${fromSetting
+        ? '<span class="badge b-accent"><span class="dot" aria-hidden="true"></span>Изменён</span>'
+        : '<span class="badge b-neutral"><span class="dot" aria-hidden="true"></span>Из .env</span>'}</div>
+      <p class="tz-current"><b>${esc(settings.timezone_label || current)}</b>${nowText ? `<span class="muted"> · сейчас ${esc(nowText)}</span>` : ''}</p>
+      <form id="tz-set" class="tz-form" novalidate>
+        <label class="field"><span class="label">Выбрать</span>
+          <select class="input" name="tz">${options}<option value="other"${known ? '' : ' selected'}>Другой…</option></select></label>
+        <label class="field" id="tz-other"${known ? ' hidden' : ''}><span class="label">Название пояса или смещение</span>
+          <input class="input" name="tz_other" list="tz-all" autocomplete="off" spellcheck="false" placeholder="Europe/Moscow или UTC+3" value="${known ? '' : esc(current)}"></label>
+        <datalist id="tz-all">${zones.map((z) => `<option value="${esc(z)}">`).join('')}</datalist>
+        <div class="tz-actions">
+          <button class="btn btn-primary" type="submit">${icon('check')}<span>Сохранить</span></button>
+          ${fromSetting ? `<button type="button" class="btn btn-ghost" data-action="tz-env">${icon('refresh')}<span>Как в .env: ${esc(settings.timezone_env_label || settings.timezone_env || '')}</span></button>` : ''}
+        </div>
+      </form>
+      <p class="hint">В этом поясе считаются расписание каналов, «ко времени», контент-план и дни статистики. Уже запланированные посты выйдут в тот же момент, что и раньше, а время слотов («09:00») после смены считается по новому поясу. То же — в боте: ⚙️ Настройки → 🕒 Часовой пояс или <code>/timezone</code>.</p>
+    </section>`;
+  }
+
+  /** PUT api/settings/timezone after a confirmation; null — back to TIMEZONE from .env. */
+  async function saveTimezone(name, rerender, envLabel = '') {
+    const ok = await confirmModal({
+      title: 'Сменить часовой пояс?',
+      message: `${name ? `Новый пояс: ${name}.` : `Пояс вернётся к значению из .env: ${envLabel}.`} Время слотов в расписании каналов будет считаться по нему; уже запланированные посты выйдут в то же время, что и раньше.`,
+      confirmLabel: 'Сменить',
+    });
+    if (!ok) return;
+    const res = await api.put('api/settings/timezone', { timezone: name });
+    if (res && res.timezone) state.serverTz = res.timezone;
+    toast(`Часовой пояс: ${(res && res.timezone_label) || name}`, 'success');
+    rerender();
   }
 
   // ---- settings: premium (custom) emoji, SPEC_V23

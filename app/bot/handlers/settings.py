@@ -1,5 +1,5 @@
 """«⚙️ Настройки»: web panel address and password, the bot's token source, premium emoji (SPEC_V23),
-admins, timezone; /addadmin and /deladmin.
+admins, timezone (🕒, /timezone); /addadmin and /deladmin.
 
 The bot is changed only in the web panel («Настройки» → «Бот», SPEC_V22) — a token is never typed
 into Telegram. `app.__main__` puts the running bot's `TokenState` into the dispatcher
@@ -16,12 +16,13 @@ from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
-from app.bot.callbacks import MenuCb, SettingsCb
+from app.bot.callbacks import MenuCb, SettingsCb, TimezoneCb
 from app.bot.filters import TextIs
 from app.bot.handlers.common import leave_state, panel_button, panel_link_html
 from app.bot.keyboards import BTN_SETTINGS, ib, kb
-from app.bot.utils import NO_PREVIEW, esc, is_owner, premium_emoji_enabled, safe_answer, show, tz_name
+from app.bot.utils import NO_PREVIEW, esc, is_owner, premium_emoji_enabled, safe_answer, show
 from app.config import BOT_TOKEN_SETTING, TOKEN_SOURCE_ENV, TOKEN_SOURCE_PANEL, TokenState
+from app.services import timezone as timezone_service
 
 log = logging.getLogger(__name__)
 
@@ -111,7 +112,8 @@ async def settings_screen(db: Any, config: Any, user_id: int,
         "",
         f"🌐 Веб-панель: {panel_link_html(config)}",
         password_line,
-        f"🕒 Часовой пояс: {esc(tz_name(config.tz))}",
+        f"🕒 Часовой пояс: {esc(timezone_service.describe(config.tz))}"
+        + ("" if timezone_service.source(config) == timezone_service.SOURCE_SETTING else " — из .env"),
         "",
         *(esc(line) for line in token_lines(await current_token_state(db, token))),
         "",
@@ -127,7 +129,7 @@ async def settings_screen(db: Any, config: Any, user_id: int,
             "Удалить: <code>/deladmin ID</code>",
             "ID пользователя можно узнать, переслав его сообщение боту @userinfobot.",
         ]
-    rows = [premium_button(premium)]
+    rows = [premium_button(premium), [ib("🕒 Часовой пояс", TimezoneCb(i=-2))]]
     if owner and source == PASSWORD_PANEL:
         rows.append([ib("🔑 Сбросить пароль веб-панели", SettingsCb(action="reset"), style="danger")])
     open_panel = panel_button("🌐 Открыть веб-панель", config)  # only for an https:// address
@@ -199,6 +201,72 @@ async def cb_premium(callback: CallbackQuery, db: Any, config: Any, token_state:
     await show(callback, text, markup)
 
 
+TZ_HELP = ("Все времена бота — расписание каналов, «ко времени», контент-план, дни статистики — "
+           "считаются в этом поясе. Уже запланированные посты выйдут в тот же момент, что и раньше; "
+           "время слотов («09:00») после смены считается по новому поясу.")
+TZ_TYPE_HINT = "Другой пояс: <code>/timezone Europe/Moscow</code> или <code>/timezone UTC+3</code>."
+
+
+def timezone_screen(config: Any) -> tuple[str, InlineKeyboardMarkup]:
+    current = timezone_service.tz_key(config.tz)
+    from_setting = timezone_service.source(config) == timezone_service.SOURCE_SETTING
+    lines = [
+        "🕒 <b>Часовой пояс</b>",
+        "",
+        f"Сейчас: <b>{esc(timezone_service.describe(config.tz))}</b>" + ("" if from_setting else " — из .env"),
+        f"<i>{esc(TZ_HELP)}</i>",
+        "",
+        TZ_TYPE_HINT,
+    ]
+    buttons = []
+    for index, (name, label) in enumerate(timezone_service.COMMON):
+        mark = "✅ " if name == current else ""
+        offset = timezone_service.offset_text(timezone_service.parse_timezone(name))
+        buttons.append(ib(f"{mark}{label} ({offset})", TimezoneCb(i=index)))
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    if from_setting:
+        env = timezone_service.describe(config.tz_env)
+        rows.append([ib(f"↩️ Как в .env: {env}", TimezoneCb(i=-1))])
+    rows.append([ib("⬅️ Назад", SettingsCb(action="show"))])
+    return "\n".join(lines), kb(*rows)
+
+
+async def cb_timezone(callback: CallbackQuery, callback_data: TimezoneCb, db: Any, config: Any) -> None:
+    """Timezone list (i = -2), a choice from it (i ≥ 0) or back to .env (i = -1); any admin."""
+    if callback_data.i == -2:
+        await safe_answer(callback)
+    else:
+        if callback_data.i == -1:
+            name = None
+        elif 0 <= callback_data.i < len(timezone_service.COMMON):
+            name = timezone_service.COMMON[callback_data.i][0]
+        else:
+            await safe_answer(callback, "Кнопка устарела — откройте список заново", alert=True)
+            return
+        tz = await timezone_service.set_timezone(db, config, name)
+        log.info("Timezone set to %s by %s", timezone_service.tz_key(tz), callback.from_user.id)
+        await safe_answer(callback, f"Часовой пояс: {timezone_service.describe(tz)}")
+    text, markup = timezone_screen(config)
+    await show(callback, text, markup)
+
+
+async def cmd_timezone(message: Message, command: CommandObject, state: FSMContext, db: Any, config: Any) -> None:
+    """/timezone — the list; /timezone <name|UTC±N> — set it; /timezone env — back to .env."""
+    await leave_state(message.bot, message.chat.id, state)
+    raw = (command.args or "").strip()
+    note = ""
+    if raw:
+        try:
+            tz = await timezone_service.set_timezone(db, config, None if raw.lower() in ("env", ".env") else raw)
+        except ValueError as exc:
+            await message.answer(f"⚠️ {esc(str(exc))}")
+            return
+        log.info("Timezone set to %s by %s", timezone_service.tz_key(tz), message.from_user.id)
+        note = f"✅ Часовой пояс: <b>{esc(timezone_service.describe(tz))}</b>\n\n"
+    text, markup = timezone_screen(config)
+    await message.answer(note + text, reply_markup=markup, link_preview_options=NO_PREVIEW)
+
+
 def _parse_user_id(command: CommandObject) -> int | None:
     raw = (command.args or "").strip()
     return int(raw) if raw.isdigit() and int(raw) > 0 else None
@@ -248,6 +316,7 @@ def create_router() -> Router:
     router = Router(name="settings")
     router.message.register(cmd_settings, Command("settings"))
     router.message.register(cmd_settings, TextIs(BTN_SETTINGS))
+    router.message.register(cmd_timezone, Command("timezone"))
     router.message.register(cmd_addadmin, Command("addadmin"))
     router.message.register(cmd_deladmin, Command("deladmin"))
     router.callback_query.register(cb_show, MenuCb.filter(F.action == "settings"))
@@ -255,4 +324,5 @@ def create_router() -> Router:
     router.callback_query.register(cb_reset, SettingsCb.filter(F.action == "reset"))
     router.callback_query.register(cb_reset_ok, SettingsCb.filter(F.action == "reset_ok"))
     router.callback_query.register(cb_premium, SettingsCb.filter(F.action == "premium"))
+    router.callback_query.register(cb_timezone, TimezoneCb.filter())
     return router

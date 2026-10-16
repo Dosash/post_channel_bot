@@ -18,6 +18,7 @@ from aiogram.exceptions import (
 )
 
 from app.db import CH_ACTIVE, CH_IGNORED, CH_LEFT, CH_PENDING, now
+from app.services import avatars
 
 log = logging.getLogger(__name__)
 
@@ -204,11 +205,12 @@ async def add_channel(bot: Any, db: Any, ref: str | int, added_by: int | None) -
     return row
 
 
-async def refresh_channel(bot: Any, db: Any, chat_id: int) -> dict:
+async def refresh_channel(bot: Any, db: Any, chat_id: int, uploads_dir: Any = None) -> dict:
     """Re-read title/username/rights/members from Telegram.
 
     Marks the channel 'left' when Telegram says the chat is gone or the bot is no longer admin;
     a 'left' channel where the bot can post again becomes active. Network failures → ChannelError.
+    With `uploads_dir` the avatar is re-checked too (app.services.avatars).
     """
     existing = await db.get_channel(chat_id)
     if existing is None:
@@ -232,6 +234,12 @@ async def refresh_channel(bot: Any, db: Any, chat_id: int) -> dict:
                                   status=status, rights=rights, members_count=members)
     if members is not None and row["status"] == CH_ACTIVE:
         await db.add_member_snapshot(chat_id, members)
+    if uploads_dir is not None:
+        try:
+            if await avatars.sync_avatar(bot, db, uploads_dir, chat_id, chat):
+                row = await db.get_channel(chat_id)
+        except Exception as exc:  # the avatar is cosmetic: the refresh itself succeeded
+            log.info("Avatar of channel %s not updated: %s", chat_id, type(exc).__name__)
     return row
 
 

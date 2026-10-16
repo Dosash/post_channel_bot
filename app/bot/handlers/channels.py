@@ -332,7 +332,7 @@ async def cb_card(callback: CallbackQuery, callback_data: ChannelCb, state: FSMC
 
 async def cb_refresh(callback: CallbackQuery, callback_data: ChannelCb, db: Any, config: Any) -> None:
     try:
-        channel = await channel_service.refresh_channel(callback.bot, db, callback_data.chat_id)
+        channel = await channel_service.refresh_channel(callback.bot, db, callback_data.chat_id, config.uploads_dir)
     except ChannelError as exc:
         await safe_answer(callback, str(exc), alert=True)
         return

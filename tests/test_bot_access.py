@@ -39,7 +39,7 @@ def test_used_update_types_cover_channel_events(db, config):
 
 def test_bot_commands():
     commands = [c.command for c in BOT_COMMANDS]
-    assert commands == ["start", "new", "plan", "channels", "stats", "posts", "settings", "help", "cancel"]
+    assert commands == ["start", "new", "plan", "channels", "stats", "posts", "settings", "timezone", "help", "cancel"]
 
 
 async def test_non_admin_start_gets_private_reply_only(h, owner):

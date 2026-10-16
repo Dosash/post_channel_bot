@@ -181,7 +181,13 @@ class FakeBot:
     async def get_chat(self, chat_id: int | str, **kwargs: Any) -> Chat:
         self._record("get_chat", {"chat_id": chat_id, **kwargs})
         info = self._chat_info(chat_id)
-        return Chat(id=info["id"], type=info["type"], title=info["title"], username=info["username"])
+        photo = None
+        if info.get("photo"):  # set info["photo"] = "<id>" to give the chat an avatar
+            from aiogram.types import ChatPhoto
+            pid = info["photo"]
+            photo = ChatPhoto(small_file_id=f"{pid}_s", small_file_unique_id=f"{pid}_su",
+                              big_file_id=f"{pid}_b", big_file_unique_id=f"{pid}_bu")
+        return Chat(id=info["id"], type=info["type"], title=info["title"], username=info["username"], photo=photo)
 
     async def get_chat_member(self, chat_id: int | str, user_id: int, **kwargs: Any):
         self._record("get_chat_member", {"chat_id": chat_id, "user_id": user_id, **kwargs})

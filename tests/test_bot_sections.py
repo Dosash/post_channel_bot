@@ -8,10 +8,11 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.methods import DeleteMessage, EditMessageText, SendMessage
 
-from app.bot.callbacks import ChannelCb, PostCb, PostListCb, SettingsCb, StatsCb
+from app.bot.callbacks import ChannelCb, PostCb, PostListCb, SettingsCb, StatsCb, TimezoneCb
 from app.bot.keyboards import BTN_POSTS, BTN_SETTINGS, BTN_STATS
 from app.bot.states import PostStates
 from app.db import CH_ACTIVE, POST_DELETED, POST_DRAFT, POST_SCHEDULED, POST_SENT
+from app.services.timezone import COMMON as TZ_COMMON
 from tests.mocked_session import Harness
 
 OWNER = 111
@@ -211,6 +212,39 @@ async def test_premium_emoji_toggle(h):
     await h.press(ADMIN2, SettingsCb(action="premium"))
     assert await h.db.get_premium_emoji() is False
     assert "недоступны" in h.edits()[-1].text
+
+
+async def test_timezone_from_settings(h):
+    """«🕒 Часовой пояс»: a list of zones, a choice applies at once, «Как в .env» returns it."""
+    await h.send(ADMIN2, BTN_SETTINGS)
+    assert "Asia/Tashkent (UTC+5) — из .env" in h.last_to(ADMIN2).text
+    assert TimezoneCb(i=-2).pack() in markup_data(h.last_to(ADMIN2).reply_markup)
+
+    await h.press(ADMIN2, TimezoneCb(i=-2))
+    screen = h.edits()[-1]
+    assert "🕒 <b>Часовой пояс</b>" in screen.text and "/timezone" in screen.text
+    moscow = next(i for i, (name, _) in enumerate(TZ_COMMON) if name == "Europe/Moscow")
+    assert TimezoneCb(i=moscow).pack() in markup_data(screen.reply_markup)
+    assert TimezoneCb(i=-1).pack() not in markup_data(screen.reply_markup)
+
+    await h.press(ADMIN2, TimezoneCb(i=moscow))
+    assert str(h.config.tz) == "Europe/Moscow" and await h.db.get_setting("timezone") == "Europe/Moscow"
+    screen = h.edits()[-1]
+    assert "Europe/Moscow (UTC+3)" in screen.text
+    assert "✅ Москва (UTC+3)" in [b.text for row in screen.reply_markup.inline_keyboard for b in row]
+
+    await h.press(ADMIN2, TimezoneCb(i=-1))
+    assert str(h.config.tz) == "Asia/Tashkent" and await h.db.get_setting("timezone") is None
+
+
+async def test_timezone_command(h):
+    await h.send(OWNER, "/timezone UTC+3")
+    assert "✅ Часовой пояс: <b>UTC+3</b>" in h.last_to(OWNER).text
+    assert str(h.config.tz) == "Etc/GMT-3"
+    await h.send(OWNER, "/timezone Mars/Base")
+    assert "Неизвестный часовой пояс" in h.last_to(OWNER).text and str(h.config.tz) == "Etc/GMT-3"
+    await h.send(OWNER, "/timezone env")
+    assert str(h.config.tz) == "Asia/Tashkent"
 
 
 async def test_owner_resets_web_password(h):

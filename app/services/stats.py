@@ -90,6 +90,7 @@ async def channel_stats(db: Any, chat_id: int, days: int, tz: ZoneInfo, *, now_t
         past = await db.get_member_count_at(chat_id, current - n_days * DAY)
         delta[key] = members_now - past if members_now is not None and past is not None else None
     first = await db.get_first_snapshot(chat_id)
+    known = [item["members"] for item in series if item["members"] is not None]
 
     return {
         "channel": channel,
@@ -97,6 +98,7 @@ async def channel_stats(db: Any, chat_id: int, days: int, tz: ZoneInfo, *, now_t
         "period_start": period_start,
         "members_now": members_now,
         "delta": delta,
+        "growth": known[-1] - known[0] if len(known) >= 2 else None,
         "tracking_since": first["ts"] if first else None,
         "series": series,
         "joins": joins,
@@ -105,6 +107,77 @@ async def channel_stats(db: Any, chat_id: int, days: int, tz: ZoneInfo, *, now_t
         "posts_bot": posts_bot,
         "reactions": await db.reactions_total(chat_id, period_start),
         "top_posts": await _top_posts(db, channel, period_start),
+    }
+
+
+def _sum_known(values: list[int | None]) -> int | None:
+    """Sum of the known values; None when nothing is known."""
+    known = [v for v in values if v is not None]
+    return sum(known) if known else None
+
+
+async def combined_stats(db: Any, chat_ids: list[int], days: int, tz: ZoneInfo, *,
+                         now_ts: int | None = None) -> dict:
+    """Statistics of several channels summed up, plus a per-channel breakdown.
+
+    Subscribers of a day are the sum over the channels whose count that day is known, so a channel
+    that started being tracked mid-period raises the line; `growth` sums the growth of each channel
+    and is free of such jumps. Unknown channel ids are skipped.
+    """
+    days = max(1, min(int(days), MAX_DAYS))
+    per_channel = []
+    for chat_id in dict.fromkeys(chat_ids):  # unique, order kept
+        try:
+            per_channel.append(await channel_stats(db, chat_id, days, tz, now_ts=now_ts))
+        except ChannelError:
+            continue  # deleted meanwhile
+
+    if per_channel:
+        series = []
+        for index, item in enumerate(per_channel[0]["series"]):
+            day = [s["series"][index] for s in per_channel]
+            series.append({
+                "date": item["date"],
+                "members": _sum_known([d["members"] for d in day]),
+                **{key: sum(d[key] for d in day) for key in ("joins", "leaves", "posts", "posts_bot")},
+            })
+        period_start = per_channel[0]["period_start"]
+    else:
+        current = int(now_ts if now_ts is not None else time.time())
+        today = datetime.fromtimestamp(current, tz).date()
+        day_list = [today - timedelta(days=days - 1 - i) for i in range(days)]
+        series = [{"date": d.isoformat(), "members": None, "joins": 0, "leaves": 0, "posts": 0, "posts_bot": 0}
+                  for d in day_list]
+        period_start = _day_start(day_list[0], tz)
+
+    top = []
+    for s in per_channel:
+        channel = s["channel"]
+        for post in s["top_posts"]:
+            top.append({**post, "channel_id": channel["id"], "channel_title": channel.get("title")})
+    top.sort(key=lambda p: (p["reactions_total"] or 0, p["sent_at"] or 0), reverse=True)
+
+    since = [s["tracking_since"] for s in per_channel if s["tracking_since"] is not None]
+    return {
+        "days": days,
+        "period_start": period_start,
+        "members_now": _sum_known([s["members_now"] for s in per_channel]),
+        "delta": {key: _sum_known([s["delta"][key] for s in per_channel]) for key in DELTA_PERIODS},
+        "growth": _sum_known([s["growth"] for s in per_channel]),
+        "tracking_since": min(since) if since else None,
+        "series": series,
+        **{key: sum(s[key] for s in per_channel) for key in ("joins", "leaves", "posts", "posts_bot", "reactions")},
+        "top_posts": top[:TOP_POSTS_LIMIT],
+        "channels": [
+            {
+                "channel": s["channel"],
+                "members_now": s["members_now"],
+                "growth": s["growth"],
+                "delta": s["delta"],
+                **{key: s[key] for key in ("joins", "leaves", "posts", "posts_bot", "reactions")},
+            }
+            for s in per_channel
+        ],
     }
 
 

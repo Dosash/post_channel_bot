@@ -44,7 +44,8 @@ from app.markdown import (
 )
 from app.media import PHOTO_MAX_BYTES, UPLOAD_NAME_RE, VIDEO_MAX_BYTES, content_type
 from app.services.posting import FILE_ID_ERRORS, PostError, render_text
-from app.web.api import POST_ID, get_post_or_404, parse_text, path_id, stored_media
+from app.services import avatars
+from app.web.api import CHANNEL_ID, POST_ID, get_post_or_404, parse_text, path_id, stored_media
 from app.web.auth import json_error, read_json
 from app.web.keys import BOT_KEY, CONFIG_KEY, DB_KEY, DOWNLOAD_LOCKS_KEY
 from app.web.logmask import mask_secrets
@@ -275,6 +276,21 @@ async def get_upload(request: web.Request) -> web.FileResponse:
     return _file_response(path, UPLOAD_CACHE_CONTROL)
 
 
+# ------------------------------------------------------------------ channel avatars
+
+# The panel asks for ?v=<photo_id>: a changed photo has a new URL, so the file may be cached long.
+AVATAR_CACHE_CONTROL = "private, max-age=604800"
+
+
+async def channel_avatar(request: web.Request) -> web.FileResponse:
+    """``GET /api/channels/{id}/avatar`` — the channel photo saved by app.services.avatars; 404 when
+    the channel has none (the panel shows its letter then)."""
+    path = avatars.avatar_path(request.app[CONFIG_KEY].uploads_dir, path_id(request))
+    if not path.is_file():
+        raise json_error(404, "У канала нет аватара")
+    return web.FileResponse(path, headers={"Cache-Control": AVATAR_CACHE_CONTROL, "Content-Type": "image/jpeg"})
+
+
 # ------------------------------------------------------------------ post media files
 
 async def post_media_file(request: web.Request) -> web.FileResponse:
@@ -436,3 +452,4 @@ def setup_routes(app: web.Application) -> None:
     r.add_get("/api/uploads/{name}", get_upload)
     r.add_get(f"/api/posts/{POST_ID}/media/{{index:[0-9]{{1,2}}}}", post_media_file)
     r.add_get(f"/api/posts/{POST_ID}/photo", post_photo)
+    r.add_get(f"/api/channels/{CHANNEL_ID}/avatar", channel_avatar)

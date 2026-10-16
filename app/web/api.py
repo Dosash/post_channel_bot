@@ -46,6 +46,7 @@ from app.config import BOT_TOKEN_SETTING, Config
 from app.db import (
     CH_ACTIVE,
     CH_IGNORED,
+    CH_LEFT,
     CH_PENDING,
     POST_DELETED,
     POST_DRAFT,
@@ -78,6 +79,7 @@ from app.media import (
 from app.services import channels as channels_service
 from app.services import plan as plan_service
 from app.services import stats as stats_service
+from app.services import timezone as timezone_service
 from app.services.channels import ChannelError
 from app.services.folders import CHANNEL_NOT_FOUND_ERROR, NOT_FOUND_ERROR, FolderError
 from app.services.plan import PlanError
@@ -1006,7 +1008,7 @@ async def refresh_channel(request: web.Request) -> web.Response:
     db = _db(request)
     channel = await get_channel_or_404(db, path_id(request))
     try:
-        row = await channels_service.refresh_channel(_bot(request), db, channel["id"])
+        row = await channels_service.refresh_channel(_bot(request), db, channel["id"], _config(request).uploads_dir)
     except ChannelError as exc:
         raise json_error(400, str(exc)) from exc
     return web.json_response({"channel": serialize_channel(row)})
@@ -1030,6 +1032,26 @@ async def channel_stats(request: web.Request) -> web.Response:
     except ChannelError as exc:  # deleted concurrently
         raise json_error(404, str(exc)) from exc
     stats["channel"] = serialize_channel(stats["channel"])
+    return web.json_response(stats)
+
+
+async def combined_stats(request: web.Request) -> web.Response:
+    """Summed statistics: `?channels=id,id` or, without it, every channel with statistics."""
+    db = _db(request)
+    days = as_int(request.query.get("days", "30"))
+    days = min(max(days if days is not None else 30, 1), 365)
+    available = [ch["id"] for ch in await db.list_channels([CH_ACTIVE, CH_LEFT])]
+    raw = request.query.get("channels", "").strip()
+    if raw:
+        wanted = {as_int(part) for part in raw.split(",")}
+        chat_ids = [cid for cid in available if cid in wanted]
+        if not chat_ids:
+            raise json_error(404, "Каналы не найдены")
+    else:
+        chat_ids = available
+    stats = await stats_service.combined_stats(db, chat_ids, days, _config(request).tz)
+    for item in stats["channels"]:
+        item["channel"] = serialize_channel(item["channel"])
     return web.json_response(stats)
 
 
@@ -1160,12 +1182,38 @@ async def get_settings(request: web.Request) -> web.Response:
         "password_fixed": fixed_password(config) is not None,
         "password_source": await password_source(_db(request), config),
         "timezone": str(config.tz),
+        **timezone_info(config),
         "web_url": config.web_url,
         "web_prefix": request.app[PREFIX_KEY],
         "hub_url": config.hub_url,
         "version": config.version,
         "slots_help": plan_service.SLOTS_HELP,
     })
+
+
+def timezone_info(config: Config) -> dict:
+    return {
+        "timezone_label": timezone_service.describe(config.tz),
+        "timezone_env": str(config.tz_env),
+        "timezone_env_label": timezone_service.describe(config.tz_env),
+        "timezone_source": timezone_service.source(config),
+        "timezones": timezone_service.common_choices(),
+    }
+
+
+async def set_timezone(request: web.Request) -> web.Response:
+    """``PUT /api/settings/timezone {timezone: "Europe/Moscow" | "UTC+3" | null}`` — null returns
+    to TIMEZONE from .env. → ``{timezone, timezone_label, timezone_env, timezone_source, …}``."""
+    body = await read_json(request)
+    raw = body.get("timezone")
+    if raw is not None and not isinstance(raw, str):
+        raise json_error(400, "Ожидается timezone: строка или null")
+    config = _config(request)
+    try:
+        await timezone_service.set_timezone(_db(request), config, raw)
+    except ValueError as exc:
+        raise json_error(400, str(exc)) from exc
+    return web.json_response({"timezone": str(config.tz), **timezone_info(config)})
 
 
 PREMIUM_EMOJI_VALUE_ERROR = "Ожидается enabled: true или false"
@@ -1200,6 +1248,7 @@ def setup_routes(app: web.Application) -> None:
     r.add_get("/api/overview", get_overview)
     r.add_get("/api/settings", get_settings)
     r.add_put("/api/settings/premium-emoji", set_premium_emoji)
+    r.add_put("/api/settings/timezone", set_timezone)
 
     # The requests that may publish accept X-Idempotency-Key (app.web.idempotency).
     r.add_get("/api/posts", list_posts)
@@ -1218,6 +1267,7 @@ def setup_routes(app: web.Application) -> None:
     r.add_post(f"/api/channels/{CHANNEL_ID}/refresh", refresh_channel)
     r.add_delete(f"/api/channels/{CHANNEL_ID}", delete_channel)
     r.add_get(f"/api/channels/{CHANNEL_ID}/stats", channel_stats)
+    r.add_get("/api/stats", combined_stats)
 
     r.add_get("/api/admins", list_admins)
     r.add_post("/api/admins", add_admin)

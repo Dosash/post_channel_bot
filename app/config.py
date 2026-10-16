@@ -136,8 +136,13 @@ class Config:
     uploads_dir: Path = BASE_DIR / "data" / "uploads"
     log_level: str = "INFO"
     version: str = __version__
+    # TIMEZONE from .env; `tz` may be replaced on the fly by the `timezone` setting (app.services.timezone)
+    tz_env: ZoneInfo | None = None
+    tz_from_setting: bool = False
 
     def __post_init__(self) -> None:
+        if self.tz_env is None:
+            self.tz_env = self.tz
         self.web_prefix = normalize_prefix(self.web_prefix)
         self.hub_url = normalize_hub_url(self.hub_url)
 

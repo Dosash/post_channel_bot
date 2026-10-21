@@ -46,6 +46,11 @@ Markdown-разметка, фото, видео, GIF и альбомы, **цве
     <td align="center" valign="top"><a href="docs/screenshots/panel-channels.png"><img src="docs/screenshots/panel-channels.png" alt="Веб-панель — Каналы и папки" width="260"></a><br><sub>Каналы и папки</sub></td>
     <td align="center" valign="top"><a href="docs/screenshots/panel-stats.png"><img src="docs/screenshots/panel-stats.png" alt="Веб-панель — Статистика" width="260"></a><br><sub>Статистика</sub></td>
   </tr>
+  <tr>
+    <td align="center" valign="top"><a href="docs/screenshots/panel-settings.png"><img src="docs/screenshots/panel-settings.png" alt="Веб-панель — Настройки" width="260"></a><br><sub>Настройки и «Мои боты»</sub></td>
+    <td></td>
+    <td></td>
+  </tr>
 </table>
 
 ## Содержание

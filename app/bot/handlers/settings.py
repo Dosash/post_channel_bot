@@ -1,5 +1,6 @@
 """«⚙️ Настройки»: web panel address and password, the bot's token source, premium emoji (SPEC_V23),
-admins, timezone (🕒, /timezone); /addadmin and /deladmin.
+admins, timezone (🕒, /timezone), the owner's other bots («🤖 Мои боты», /helperbots); /addadmin and
+/deladmin.
 
 The bot is changed only in the web panel («Настройки» → «Бот», SPEC_V22) — a token is never typed
 into Telegram. `app.__main__` puts the running bot's `TokenState` into the dispatcher
@@ -12,16 +13,18 @@ from typing import Any
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramAPIError
-from aiogram.filters import Command, CommandObject
+from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
-from app.bot.callbacks import MenuCb, SettingsCb, TimezoneCb
-from app.bot.filters import TextIs
-from app.bot.handlers.common import leave_state, panel_button, panel_link_html
+from app.bot.callbacks import HelperBotCb, MenuCb, SettingsCb, TimezoneCb
+from app.bot.filters import TextIs, UserInput
+from app.bot.handlers.common import drop_prompt, leave_state, panel_button, panel_link_html
 from app.bot.keyboards import BTN_SETTINGS, ib, kb
+from app.bot.states import SettingsStates
 from app.bot.utils import NO_PREVIEW, esc, is_owner, premium_emoji_enabled, safe_answer, show
 from app.config import BOT_TOKEN_SETTING, TOKEN_SOURCE_ENV, TOKEN_SOURCE_PANEL, TokenState
+from app.services import helper_bots
 from app.services import timezone as timezone_service
 
 log = logging.getLogger(__name__)
@@ -50,6 +53,35 @@ def premium_lines(enabled: bool) -> list[str]:
 
 def premium_button(enabled: bool) -> list:
     return [ib(f"✨ Премиум-эмодзи: {'вкл' if enabled else 'выкл'}", SettingsCb(action="premium"))]
+
+
+HELPERS_HELP = ("Когда бота назначат администратором канала, он пришлёт кнопки «➕ @бот» — "
+                "одно нажатие, и ваш бот тоже станет админом этого канала.")
+HELPERS_USAGE = ("Командой: <code>/helperbots @first_bot @second_bot</code> — заменить весь список, "
+                 "<code>/helperbots -</code> — очистить.")
+HELPER_PROMPT = ("➕ <b>Добавить бота</b>\n\nПришлите юзернейм бота, например <code>@my_news_bot</code>, или ссылку "
+                 "t.me/…, можно несколько через пробел. Или просто перешлите сюда любое сообщение от этого бота.")
+
+
+def helpers_lines(names: list[str]) -> list[str]:
+    listed = ", ".join(f"@{esc(n)}" for n in names) if names else "не заданы"
+    return [f"🤖 Мои боты: {listed}"]
+
+
+def helpers_screen(names: list[str], note: str = "") -> tuple[str, InlineKeyboardMarkup]:
+    """«🤖 Мои боты»: the list with 🗑 per bot and «➕ Добавить бота»."""
+    lines = [note, ""] if note else []
+    lines += ["🤖 <b>Мои боты</b>", f"<i>{esc(HELPERS_HELP)}</i>", ""]
+    if names:
+        lines += [f"{i}. @{esc(name)}" for i, name in enumerate(names, 1)]
+    else:
+        lines.append("Пока ни одного бота.")
+    lines += ["", HELPERS_USAGE]
+    rows = [[ib(f"🗑 @{name}"[:64], HelperBotCb(action="del", name=name))] for name in names]
+    if len(names) < helper_bots.MAX_HELPERS:
+        rows.append([ib("➕ Добавить бота", HelperBotCb(action="add"), style="primary")])
+    rows.append([ib("↩️ Настройки", SettingsCb(action="show"))])
+    return "\n".join(lines), kb(*rows)
 
 
 async def current_token_state(db: Any, state: TokenState | None = None) -> TokenState:
@@ -119,6 +151,8 @@ async def settings_screen(db: Any, config: Any, user_id: int,
         "",
         *premium_lines(premium),
         "",
+        *helpers_lines(await helper_bots.get_helpers(db)),
+        "",
         f"👥 <b>Администраторы</b> ({len(admins)}):",
         *(_admin_line(admin) for admin in admins),
     ]
@@ -129,7 +163,8 @@ async def settings_screen(db: Any, config: Any, user_id: int,
             "Удалить: <code>/deladmin ID</code>",
             "ID пользователя можно узнать, переслав его сообщение боту @userinfobot.",
         ]
-    rows = [premium_button(premium), [ib("🕒 Часовой пояс", TimezoneCb(i=-2))]]
+    rows = [premium_button(premium), [ib("🕒 Часовой пояс", TimezoneCb(i=-2)),
+                                      ib("🤖 Мои боты", HelperBotCb(action="show"))]]
     if owner and source == PASSWORD_PANEL:
         rows.append([ib("🔑 Сбросить пароль веб-панели", SettingsCb(action="reset"), style="danger")])
     open_panel = panel_button("🌐 Открыть веб-панель", config)  # only for an https:// address
@@ -146,7 +181,9 @@ async def cmd_settings(message: Message, state: FSMContext, db: Any, config: Any
     await message.answer(text, reply_markup=markup, link_preview_options=NO_PREVIEW)
 
 
-async def cb_show(callback: CallbackQuery, db: Any, config: Any, token_state: TokenState | None = None) -> None:
+async def cb_show(callback: CallbackQuery, state: FSMContext, db: Any, config: Any,
+                  token_state: TokenState | None = None) -> None:
+    await drop_prompt(state)
     await safe_answer(callback)
     text, markup = await settings_screen(db, config, callback.from_user.id, token_state)
     await show(callback, text, markup)
@@ -267,6 +304,77 @@ async def cmd_timezone(message: Message, command: CommandObject, state: FSMConte
     await message.answer(note + text, reply_markup=markup, link_preview_options=NO_PREVIEW)
 
 
+async def cmd_helperbots(message: Message, command: CommandObject, state: FSMContext, db: Any) -> None:
+    """/helperbots — «🤖 Мои боты»; /helperbots @a @b — replace the list; /helperbots - — clear it (any admin)."""
+    await leave_state(message.bot, message.chat.id, state)
+    raw = (command.args or "").strip()
+    note = ""
+    if raw:
+        try:
+            me = await message.bot.me()
+            names = [] if raw in ("-", "—") else helper_bots.parse_list(raw, me.username)
+        except ValueError as exc:
+            await message.answer(f"⚠️ {esc(str(exc))}")
+            return
+        await helper_bots.set_helpers(db, names)
+        log.info("Helper bots set to %s by %s", names, message.from_user.id)
+        note = "✅ Сохранено."
+    text, markup = helpers_screen(await helper_bots.get_helpers(db), note)
+    await message.answer(text, reply_markup=markup)
+
+
+async def cb_helpers(callback: CallbackQuery, callback_data: HelperBotCb, state: FSMContext, db: Any) -> None:
+    """«🤖 Мои боты» buttons: show the list, ask for a bot to add, remove one (any admin)."""
+    names = await helper_bots.get_helpers(db)
+    note = ""
+    if callback_data.action == "add":
+        await safe_answer(callback)
+        await leave_state(callback.bot, callback.from_user.id, state)
+        await state.set_state(SettingsStates.helper_bot)
+        await show(callback, HELPER_PROMPT, kb([ib("↩️ Назад", HelperBotCb(action="show"))]))
+        return
+    await drop_prompt(state)
+    if callback_data.action == "del":
+        left = [n for n in names if n.lower() != callback_data.name.lower()]
+        if len(left) < len(names):
+            names = await helper_bots.set_helpers(db, left)
+            log.info("Helper bot @%s removed by %s", callback_data.name, callback.from_user.id)
+            note = f"🗑 @{esc(callback_data.name)} убран из списка."
+    await safe_answer(callback)
+    await show(callback, *helpers_screen(names, note))
+
+
+def _forwarded_bot(message: Message) -> str | None:
+    """Username of the bot a forwarded message came from."""
+    origin = message.forward_origin
+    user = getattr(origin, "sender_user", None)
+    return user.username if user is not None and user.is_bot and user.username else None
+
+
+async def on_helper_bot(message: Message, state: FSMContext, db: Any) -> None:
+    """Answer to «➕ Добавить бота»: usernames / t.me links, or a message forwarded from the bot."""
+    raw = _forwarded_bot(message) or message.text or ""
+    if not raw.strip():
+        await message.answer("Пришлите юзернейм бота текстом или перешлите сообщение от него. Или нажмите «↩️ Назад».")
+        return
+    names = await helper_bots.get_helpers(db)
+    try:
+        me = await message.bot.me()
+        new = helper_bots.parse_list(raw, me.username)
+        merged = helper_bots.parse_list(names + new, me.username)
+    except ValueError as exc:
+        await message.answer(f"⚠️ {esc(str(exc))}\n\nПопробуйте ещё раз или нажмите «↩️ Назад».",
+                             reply_markup=kb([ib("↩️ Назад", HelperBotCb(action="show"))]))
+        return
+    await state.clear()
+    added = [n for n in merged if n.lower() not in {m.lower() for m in names}]
+    await helper_bots.set_helpers(db, merged)
+    log.info("Helper bots %s added by %s", added, message.from_user.id)
+    note = (f"✅ Добавлено: {', '.join(f'@{esc(n)}' for n in added)}" if added else "Эти боты уже в списке.")
+    text, markup = helpers_screen(merged, note)
+    await message.answer(text, reply_markup=markup)
+
+
 def _parse_user_id(command: CommandObject) -> int | None:
     raw = (command.args or "").strip()
     return int(raw) if raw.isdigit() and int(raw) > 0 else None
@@ -317,6 +425,8 @@ def create_router() -> Router:
     router.message.register(cmd_settings, Command("settings"))
     router.message.register(cmd_settings, TextIs(BTN_SETTINGS))
     router.message.register(cmd_timezone, Command("timezone"))
+    router.message.register(cmd_helperbots, Command("helperbots"))
+    router.message.register(on_helper_bot, StateFilter(SettingsStates.helper_bot), UserInput())
     router.message.register(cmd_addadmin, Command("addadmin"))
     router.message.register(cmd_deladmin, Command("deladmin"))
     router.callback_query.register(cb_show, MenuCb.filter(F.action == "settings"))
@@ -325,4 +435,5 @@ def create_router() -> Router:
     router.callback_query.register(cb_reset_ok, SettingsCb.filter(F.action == "reset_ok"))
     router.callback_query.register(cb_premium, SettingsCb.filter(F.action == "premium"))
     router.callback_query.register(cb_timezone, TimezoneCb.filter())
+    router.callback_query.register(cb_helpers, HelperBotCb.filter())
     return router

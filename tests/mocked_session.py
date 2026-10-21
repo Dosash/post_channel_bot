@@ -29,6 +29,7 @@ from aiogram.methods import (
     EditMessageMedia,
     EditMessageText,
     GetChat,
+    GetChatAdministrators,
     GetChatMember,
     GetChatMemberCount,
     GetMe,
@@ -60,6 +61,7 @@ from aiogram.types import (
 
 from app.bot import create_dispatcher
 from app.markdown import validate_telegram_html, visible_length
+from tests.fakes import admin_bot_member
 
 BOT_TOKEN = "42:TEST"
 BOT_ID = 42
@@ -78,6 +80,8 @@ class MockedSession(BaseSession):
         self.bot_status: dict[int, str] = {}
         self.bot_rights: dict[int, dict] = {}
         self.member_counts: dict[int, int] = {}
+        # chat_id → usernames of other bots that are its admins (getChatAdministrators)
+        self.admin_bots: dict[int, list[str]] = {}
         self.edit_media_returns_message = False
         self._groups = itertools.count(1)
 
@@ -217,6 +221,9 @@ class MockedSession(BaseSession):
             )
         if isinstance(method, GetChatMember):
             return self._member(method, bot)
+        if isinstance(method, GetChatAdministrators):
+            info = self._chat_info(method, method.chat_id)
+            return [admin_bot_member(name, 900 + i) for i, name in enumerate(self.admin_bots.get(info["id"], []))]
         if isinstance(method, GetChatMemberCount):
             info = self._chat_info(method, method.chat_id)
             return self.member_counts.get(info["id"], 0)

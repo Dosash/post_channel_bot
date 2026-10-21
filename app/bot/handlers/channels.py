@@ -28,6 +28,7 @@ from app.bot.keyboards import (
     BTN_CHANNELS,
     CHANNEL_REQUEST_ID,
     channel_request_menu,
+    helper_rows,
     ib,
     kb,
     main_menu,
@@ -53,6 +54,7 @@ from app.bot.utils import (
 from app.db import CH_ACTIVE, CH_IGNORED, CH_LEFT, CH_PENDING
 from app.services import channels as channel_service
 from app.services import folders as folder_service
+from app.services import helper_bots
 from app.services.channels import ChannelError
 from app.services.folders import FolderError
 from app.services.plan import SLOTS_HELP, PlanError, describe_slots, normalize_slots, parse_slots, slots_to_text
@@ -210,6 +212,8 @@ async def channel_card(db: Any, channel: dict, tz: Any, *, note: str | None = No
                         ChannelCb(action="slots", chat_id=chat_id))])
         rows.append([ib(folder_label[:64], ChannelCb(action="folder", chat_id=chat_id)),
                      ib("🗓 Контент-план", PlanCb(action="ch", chat_id=chat_id))])
+        if await helper_bots.get_helpers(db):
+            rows.append([ib("🤖 Мои боты", ChannelCb(action="helpers", chat_id=chat_id))])
         rows.append([ib("🗑 Удалить из бота", ChannelCb(action="remove", chat_id=chat_id), style="danger")])
     elif status == CH_PENDING:
         rows.append([ib("✅ Добавить", ChannelCb(action="approve", chat_id=chat_id), style="success"),
@@ -279,9 +283,32 @@ def added_text(channel: dict) -> str:
     return f"✅ Канал «{esc(channel_title(channel))}» добавлен{suffix}"
 
 
-def after_add_kb() -> InlineKeyboardMarkup:
+def after_add_kb(helpers: list[str] = ()) -> InlineKeyboardMarkup:
     return kb([ib("📝 Новый пост", MenuCb(action="new"), style="primary"),
-               ib("📢 Каналы", ChannelCb(action="list"))])
+               ib("📢 Каналы", ChannelCb(action="list"))], *helper_rows(list(helpers)))
+
+
+HELPERS_NOTE = "🤖 Добавьте в канал и своих ботов: «➕ @бот» → выберите этот канал."
+
+
+async def helpers_screen(bot: Any, db: Any, channel: dict) -> tuple[str, InlineKeyboardMarkup]:
+    """«🤖 Мои боты» of a channel: which helper bots are its admins, links to add the others."""
+    chat_id = channel["id"]
+    status = await helper_bots.helpers_status(bot, db, chat_id)
+    lines = [f"🤖 <b>Мои боты в канале «{esc(channel_title(channel))}»</b>", ""]
+    for item in status:
+        mark = {True: "✅ админ", False: "➖ не добавлен", None: "❔ не удалось проверить"}[item["is_admin"]]
+        lines.append(f"@{esc(item['username'])} — {mark}")
+    missing = [item["username"] for item in status if not item["is_admin"]]
+    if missing:
+        lines += ["", "Нажмите «➕ @бот», выберите этот канал и подтвердите — права на публикацию, правку "
+                      "и удаление уже будут отмечены. Потом нажмите «🔄 Проверить»."]
+    elif status:
+        lines += ["", "Все ваши боты — администраторы этого канала."]
+    lines += ["", "Список ботов: ⚙️ Настройки → 🤖 Мои боты или веб-панель → «Настройки»."]
+    return "\n".join(lines), kb(*helper_rows(missing),
+                                [ib("🔄 Проверить", ChannelCb(action="helpers", chat_id=chat_id)),
+                                 ib("↩️ К каналу", ChannelCb(action="card", chat_id=chat_id))])
 
 
 # ------------------------------------------------------------------ list & card
@@ -339,6 +366,15 @@ async def cb_refresh(callback: CallbackQuery, callback_data: ChannelCb, db: Any,
     note = "🔄 Обновлено" if channel["status"] == CH_ACTIVE else "⚠️ Бот не администратор канала"
     await safe_answer(callback, note)
     await show(callback, *await channel_card(db, channel, config.tz))
+
+
+async def cb_helpers(callback: CallbackQuery, callback_data: ChannelCb, db: Any) -> None:
+    channel = await db.get_channel(callback_data.chat_id)
+    if channel is None:
+        await safe_answer(callback, "Канал не найден", alert=True)
+        return
+    await safe_answer(callback)
+    await show(callback, *await helpers_screen(callback.bot, db, channel))
 
 
 async def cb_remove(callback: CallbackQuery, callback_data: ChannelCb, db: Any) -> None:
@@ -691,7 +727,9 @@ async def cb_approve(callback: CallbackQuery, callback_data: ChannelCb, db: Any)
         await safe_answer(callback, str(exc), alert=True)
         return
     await safe_answer(callback, "Канал добавлен")
-    await show(callback, added_text(channel), after_add_kb())
+    helpers = await helper_bots.missing_helpers(callback.bot, db, channel["id"])
+    text = added_text(channel) + (f"\n\n{HELPERS_NOTE}" if helpers else "")
+    await show(callback, text, after_add_kb(helpers))
 
 
 async def cb_ignore(callback: CallbackQuery, callback_data: ChannelCb, db: Any) -> None:
@@ -743,6 +781,9 @@ async def _add_and_report(message: Message, state: FSMContext, db: Any, ref: str
     await state.clear()
     await message.answer(added_text(channel) + "\n\nТеперь можно создать пост: «📝 Новый пост».",
                          reply_markup=main_menu())
+    helpers = await helper_bots.missing_helpers(message.bot, db, channel["id"])
+    if helpers:
+        await message.answer(HELPERS_NOTE, reply_markup=kb(*helper_rows(helpers)))
 
 
 async def on_channel_ref(message: Message, state: FSMContext, db: Any) -> None:
@@ -812,6 +853,7 @@ def create_router() -> Router:
     cb.register(cb_folder_page, FolderPageCb.filter())
     cb.register(cb_card, ChannelCb.filter(F.action == "card"))
     cb.register(cb_refresh, ChannelCb.filter(F.action == "refresh"))
+    cb.register(cb_helpers, ChannelCb.filter(F.action == "helpers"))
     cb.register(cb_remove, ChannelCb.filter(F.action == "remove"))
     cb.register(cb_remove_ok, ChannelCb.filter(F.action == "remove_ok"))
     cb.register(cb_approve, ChannelCb.filter(F.action == "approve"))

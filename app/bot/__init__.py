@@ -27,6 +27,7 @@ BOT_COMMANDS: list[BotCommand] = [
     BotCommand(command="posts", description="Запланированные, опубликованные и черновики"),
     BotCommand(command="settings", description="Настройки и веб-панель"),
     BotCommand(command="timezone", description="Часовой пояс бота"),
+    BotCommand(command="helperbots", description="Мои боты: добавлять их в новые каналы"),
     BotCommand(command="help", description="Справка по форматированию и кнопкам"),
     BotCommand(command="cancel", description="Отменить текущее действие"),
 ]

@@ -1830,6 +1830,9 @@ a.tg-kb-btn:hover { filter: brightness(1.08); text-decoration: none; }
 .sub-details { margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid var(--border); }
 .sub-details form { margin-top: var(--space-3); }
 .admin-list { margin: var(--space-3) 0 var(--space-4); padding: 0; list-style: none; }
+.helper-list { margin: 0 0 var(--space-3); padding: 0; list-style: none; display: grid; gap: var(--space-2); }
+.helper-item { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.helper-name { font-weight: 600; margin-right: auto; overflow-wrap: anywhere; }
 .admin-item { display: flex; align-items: center; gap: var(--space-3); padding: 10px 0; border-top: 1px solid var(--border); }
 .admin-item:last-child { border-bottom: 1px solid var(--border); }
 .admin-info { flex: 1; min-width: 0; }

@@ -22,6 +22,10 @@ class ChannelStates(StatesGroup):
     folder_slots = State()  # waiting for a schedule applied to every channel of a folder
 
 
+class SettingsStates(StatesGroup):
+    helper_bot = State()  # waiting for usernames of the owner's other bots («🤖 Мои боты» → «➕ Добавить»)
+
+
 class PostStates(StatesGroup):
     reschedule = State()  # waiting for a new time of a scheduled post
 

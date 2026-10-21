@@ -248,7 +248,7 @@ async def test_settings(client, config):
                     "bot_token_source": "env", "bot_token_masked": "…" + config.bot_token[-4:],
                     "panel_token_rejected": False, "panel_token_set": False,
                     # SPEC_V23: custom emoji are sent as they are only with a Fragment username
-                    "premium_emoji": False}
+                    "premium_emoji": False, "helper_bots": []}
 
 
 # ------------------------------------------------------------------ admins

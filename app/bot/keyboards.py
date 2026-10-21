@@ -17,6 +17,7 @@ from aiogram.types import (
 
 from app.bot.callbacks import ChannelCb, MenuCb
 from app.bot.utils import channel_title
+from app.services.helper_bots import add_link
 
 # Main menu (reply keyboard) labels.
 BTN_NEW = "📝 Новый пост"
@@ -137,12 +138,17 @@ def cancel_kb() -> InlineKeyboardMarkup:
     return kb([ib(BTN_CANCEL, MenuCb(action="cancel"))])
 
 
-def discovered_kb(chat_id: int) -> InlineKeyboardMarkup:
-    """Buttons of the «bot became admin of a channel» notification."""
+def helper_rows(usernames: list[str]) -> list[list[InlineKeyboardButton]]:
+    """«➕ @bot» link per helper bot: Telegram's «add as channel admin» screen (app.services.helper_bots)."""
+    return [[url_button(f"➕ @{name}"[:64], add_link(name))] for name in usernames]
+
+
+def discovered_kb(chat_id: int, helpers: list[str] = ()) -> InlineKeyboardMarkup:
+    """Buttons of the «bot became admin of a channel» notification (+ links to add the helper bots)."""
     return kb([
         ib("✅ Добавить канал", ChannelCb(action="approve", chat_id=chat_id), style="success"),
         ib("🚫 Игнорировать", ChannelCb(action="ignore", chat_id=chat_id)),
-    ])
+    ], *helper_rows(list(helpers)))
 
 
 def pending_rows(channels: list[dict]) -> list[list[InlineKeyboardButton]]:

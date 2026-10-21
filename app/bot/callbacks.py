@@ -51,7 +51,7 @@ class ComposeOptionCb(CallbackData, prefix="co"):
 
 class ChannelCb(CallbackData, prefix="ch"):
     """Channel actions: list, card, refresh, stats, remove, remove_ok, approve, ignore, add,
-    folder (folder picker), slots (schedule editor), slots_clear.
+    folder (folder picker), slots (schedule editor), slots_clear, helpers («🤖 Мои боты»).
 
     Fields are never added to an existing factory: buttons already sent (e.g. «✅ Добавить канал»
     of a discovery notice) would stop parsing. New parameters get a factory of their own.
@@ -143,6 +143,13 @@ class SettingsCb(CallbackData, prefix="se"):
     """Settings screen actions: show, reset, reset_ok, premium (toggle premium emoji, SPEC_V23)."""
 
     action: str
+
+
+class HelperBotCb(CallbackData, prefix="hb"):
+    """«🤖 Мои боты» in the settings: show, add (ask for a username), del (`name` — the bot to remove)."""
+
+    action: str
+    name: str = ""
 
 
 class TimezoneCb(CallbackData, prefix="tz"):

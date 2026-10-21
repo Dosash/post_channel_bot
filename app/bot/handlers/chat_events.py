@@ -24,6 +24,7 @@ from app.bot.keyboards import discovered_kb
 from app.bot.utils import channel_lock, channel_title, clip, esc
 from app.db import CH_ACTIVE
 from app.services import channels as channel_service
+from app.services import helper_bots
 from app.services.posting import notify_admins
 
 log = logging.getLogger(__name__)
@@ -86,7 +87,11 @@ def _chat_label(chat: Any) -> str:
 
 # ------------------------------------------------------------------ my_chat_member
 
-def discovered_text(event: ChatMemberUpdated, rights: dict) -> str:
+HELPERS_HINT = ("🤖 Ваших ботов тоже можно сделать админами канала: нажмите «➕ @бот» и выберите этот канал — "
+                "права на публикацию, правку и удаление уже будут отмечены.")
+
+
+def discovered_text(event: ChatMemberUpdated, rights: dict, helpers: list[str] = ()) -> str:
     lines = [f"🆕 Бот назначен администратором канала {_chat_label(event.chat)}. Добавить его?"]
     by = event.from_user
     if by is not None and not by.is_bot:
@@ -95,6 +100,8 @@ def discovered_text(event: ChatMemberUpdated, rights: dict) -> str:
         lines.append("\n⚠️ У бота нет права «Публикация сообщений» — выдайте его, иначе канал не добавить.")
     elif not rights.get("can_edit"):
         lines.append("\nℹ️ Без права «Редактирование» бот не сможет изменять опубликованные посты.")
+    if helpers:
+        lines.append(f"\n{HELPERS_HINT}")
     lines.append("\n<i>Если вы не знаете этот канал — нажмите «🚫 Игнорировать».</i>")
     return "\n".join(lines)
 
@@ -117,7 +124,9 @@ async def on_my_chat_member(event: ChatMemberUpdated, db: Any, discovery: Discov
         if discovery is not None and not discovery.allow(chat.id, rights.get("can_post", False)):
             log.warning("Discovery notice for channel %s suppressed (rate limit)", chat.id)
             return
-        await notify_admins(event.bot, db, discovered_text(event, rights), reply_markup=discovered_kb(chat.id))
+        helpers = await helper_bots.missing_helpers(event.bot, db, chat.id)
+        await notify_admins(event.bot, db, discovered_text(event, rights, helpers),
+                            reply_markup=discovered_kb(chat.id, helpers))
     elif result == "removed":
         title = esc(clip(channel_title(before, chat.title or chat.id), TITLE_LIMIT))
         await notify_admins(event.bot, db,

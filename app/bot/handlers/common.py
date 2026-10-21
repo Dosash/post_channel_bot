@@ -22,7 +22,7 @@ from app.bot.keyboards import (
     pending_rows,
     url_button,
 )
-from app.bot.states import ChannelStates, ComposeStates, PlanStates, PostStates
+from app.bot.states import ChannelStates, ComposeStates, PlanStates, PostStates, SettingsStates
 from app.bot.compose_view import saved_text
 from app.bot.utils import NO_PREVIEW, esc, plural, safe_answer, safe_delete, show
 from app.buttons import FORMAT_HELP
@@ -119,7 +119,7 @@ async def leave_state(bot: Any, chat_id: int, state: FSMContext) -> None:
 # later free text is not taken as their answer.
 PROMPT_STATES = (
     ChannelStates.slots.state, ChannelStates.folder_name.state, ChannelStates.folder_slots.state,
-    PlanStates.move_time.state, PostStates.reschedule.state,
+    PlanStates.move_time.state, PostStates.reschedule.state, SettingsStates.helper_bot.state,
 )
 
 

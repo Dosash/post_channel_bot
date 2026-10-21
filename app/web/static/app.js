@@ -735,10 +735,24 @@
       const s = await api.get('api/settings');
       state.serverTz = s.timezone || '';
       if (typeof s.premium_emoji === 'boolean') state.premiumEmoji = s.premium_emoji;
+      if (Array.isArray(s.helper_bots)) state.helperBots = s.helper_bots;
     } catch (err) {
       if (err.silent) throw err;
     }
     return state.serverTz;
+  }
+
+  /** The owner's other bots («Мои боты», api/settings → helper_bots); loaded once, [] when unknown. */
+  async function ensureHelperBots() {
+    if (Array.isArray(state.helperBots)) return state.helperBots;
+    try {
+      const s = await api.get('api/settings');
+      state.helperBots = Array.isArray(s.helper_bots) ? s.helper_bots : [];
+    } catch (err) {
+      if (err.silent) throw err;
+      return [];
+    }
+    return state.helperBots;
   }
 
   /** Slot list of a channel row: `slots` from the API (or the raw slots_json column). */
@@ -1191,6 +1205,7 @@
     botUsername: '', // the bot that publishes (from api/overview): the «forward a ready post» hint links to it
     serverTz: '',
     premiumEmoji: null, // «У бота есть юзернейм с Fragment» (api/settings, api/render); null = unknown
+    helperBots: null, // the owner's other bots offered as «add as channel admin» links; null = not loaded
     pageRoot: null, // element of the current page (its actions live in the topbar: pageActions)
     pageActions: null,
   };
@@ -4909,7 +4924,7 @@
 
   async function pageChannels(root, r, ctx) {
     setPageTitle('Каналы');
-    const [data] = await Promise.all([loadGrouped(), ensureServerTz()]);
+    const [data] = await Promise.all([loadGrouped(), ensureServerTz(), ensureHelperBots()]);
     if (!ctx.alive()) return;
     const { groups, channels, folders } = data;
     const active = channels.filter((c) => c.status === 'active');
@@ -5043,6 +5058,7 @@
           rerender();
         });
       },
+      'ch-helpers': (el) => busy(el, () => showChannelHelpers(byId(el.dataset.id) || { id: el.dataset.id })),
       'ch-slots': async (el) => {
         const ch = byId(el.dataset.id);
         if (!ch) return;
@@ -5201,6 +5217,7 @@
       actions = `<button type="button" class="btn btn-secondary btn-sm" data-action="ch-slots" data-id="${id}">${icon('calendar')}<span>Расписание</span></button>
         <a class="btn btn-secondary btn-sm" href="#/plan/${id}">${icon('queue')}<span>План</span></a>
         <a class="btn btn-secondary btn-sm" href="#/stats/${id}">${icon('chart')}<span>Статистика</span></a>
+        ${state.helperBots && state.helperBots.length ? `<button type="button" class="btn btn-secondary btn-sm" data-action="ch-helpers" data-id="${id}">${icon('bot')}<span>Мои боты</span></button>` : ''}
         <span class="card-actions-end">
           <button type="button" class="icon-btn sm" data-action="refresh" data-id="${id}" aria-label="Обновить данные канала «${esc(title)}»" title="Обновить данные из Telegram">${icon('refresh')}</button>
           <button type="button" class="icon-btn sm is-danger" data-action="remove" data-id="${id}" aria-label="Удалить канал «${esc(title)}» из панели" title="Удалить из панели">${icon('trash')}</button>
@@ -5224,6 +5241,27 @@
       ${warning ? `<p class="callout is-warn small">${icon('alert')}<span>${esc(warning)}</span></p>` : ''}
       <div class="card-actions">${actions}</div>
     </article>`;
+  }
+
+  /** «Мои боты» of a channel: which of the owner's bots are its admins, «Добавить» links for the rest. */
+  async function showChannelHelpers(ch) {
+    const res = await api.get(`api/channels/${num(ch.id)}/helpers`);
+    const helpers = Array.isArray(res.helpers) ? res.helpers : [];
+    const STATUS = {
+      yes: '<span class="badge b-success"><span class="dot" aria-hidden="true"></span>Админ</span>',
+      no: '<span class="badge b-neutral"><span class="dot" aria-hidden="true"></span>Не добавлен</span>',
+      unknown: '<span class="badge b-warning"><span class="dot" aria-hidden="true"></span>Не удалось проверить</span>',
+    };
+    const statusOf = (h) => (h.is_admin === true ? 'yes' : h.is_admin === false ? 'no' : 'unknown');
+    const rows = helpers.map((h) => `<li class="helper-item">
+        <span class="helper-name">@${esc(h.username)}</span>${STATUS[statusOf(h)]}
+        ${h.is_admin === true ? '' : `<a class="btn btn-primary btn-sm" href="${esc(h.url)}" target="_blank" rel="noopener noreferrer">${icon('plus')}<span>Добавить</span></a>`}
+      </li>`).join('');
+    const body = helpers.length
+      ? `<ul class="helper-list">${rows}</ul>
+        <p class="hint">«Добавить» открывает Telegram: выберите канал «${esc(ch.title || 'этот канал')}» и подтвердите — права на публикацию, правку и удаление уже отмечены. Бот сам добавить другого бота не может — так устроен Telegram.</p>`
+      : '<p class="hint">Список ботов не задан — <a href="#/settings">Настройки → Мои боты</a>.</p>';
+    await openModal({ title: `Мои боты в канале «${ch.title || 'Канал'}»`, body, actions: [{ label: 'Закрыть', value: '', autofocus: true }] });
   }
 
   // ======================================================================= 8h. Stats page
@@ -5716,6 +5754,7 @@
     // A server without SPEC_V23 does not report the setting: no card then.
     const premium = typeof settings.premium_emoji === 'boolean' ? settings.premium_emoji : null;
     if (premium !== null) state.premiumEmoji = premium;
+    if (Array.isArray(settings.helper_bots)) state.helperBots = settings.helper_bots;
 
     const admins = Array.isArray(adminsData.admins) ? adminsData.admins : [];
     const botState = readBotState(settings, overview);
@@ -5729,6 +5768,7 @@
         ${botCardHtml(botState)}
         ${premium === null ? '' : premiumCardHtml(premium)}
         ${Array.isArray(settings.timezones) ? timezoneCardHtml(settings) : ''}
+        ${Array.isArray(settings.helper_bots) ? helperBotsCardHtml(settings.helper_bots) : ''}
         ${passwordCardHtml(Boolean(settings.password_set), settings.password_source)}
         <section class="card">
           <div class="card-head"><h2>${icon('users')}Администраторы</h2><span class="muted small">${admins.length}</span></div>
@@ -5803,6 +5843,12 @@
         rerender();
       },
       'bot-token': (form) => changeBot(form, botState, rerender),
+      'helper-bots': async (form) => {
+        const res = await api.put('api/settings/helper-bots', { bots: form.elements.namedItem('bots').value });
+        state.helperBots = Array.isArray(res.helper_bots) ? res.helper_bots : [];
+        toast(state.helperBots.length ? `Сохранено: ${state.helperBots.map((n) => `@${n}`).join(', ')}` : 'Список ботов очищен', 'success');
+        rerender();
+      },
       'tz-set': async (form) => {
         const choice = form.elements.namedItem('tz').value;
         const name = choice === 'other' ? form.elements.namedItem('tz_other').value.trim() : choice;
@@ -5920,6 +5966,21 @@
     if (res && res.timezone) state.serverTz = res.timezone;
     toast(`Часовой пояс: ${(res && res.timezone_label) || name}`, 'success');
     rerender();
+  }
+
+  // ---- settings: the owner's other bots, offered as «add as channel admin» links
+
+  function helperBotsCardHtml(names) {
+    return `<section class="card" id="helper-bots-card" aria-labelledby="helper-bots-title">
+      <div class="card-head"><h2 id="helper-bots-title">${icon('bot')}Мои боты</h2><span class="muted small">${names.length}</span></div>
+      <p class="card-text">Когда этого бота назначат администратором канала, в уведомлении появятся кнопки «➕ @бот»: нажали, выбрали канал — и ваш бот тоже админ, права на публикацию, правку и удаление уже отмечены. Сам добавить другого бота в канал бот не может — так устроен Telegram.</p>
+      <form id="helper-bots" class="add-form" novalidate>
+        <label class="field grow"><span class="label">Юзернеймы ботов через пробел или запятую</span>
+          <input class="input" name="bots" autocomplete="off" spellcheck="false" placeholder="@first_bot, @second_bot" value="${esc(names.map((n) => `@${n}`).join(', '))}"></label>
+        <button class="btn btn-primary" type="submit">${icon('check')}<span>Сохранить</span></button>
+      </form>
+      <p class="hint">Пустое поле — список очищается. Статус ботов в канале — кнопка «Мои боты» в карточке канала. То же в боте: ⚙️ Настройки → 🤖 Мои боты.</p>
+    </section>`;
   }
 
   // ---- settings: premium (custom) emoji, SPEC_V23

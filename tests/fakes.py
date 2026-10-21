@@ -40,6 +40,17 @@ def bad_request(message: str = "Bad Request: something went wrong") -> TelegramB
     return TelegramBadRequest(method=SendMessage(chat_id=0, text="x"), message=message)
 
 
+def admin_bot_member(username: str, user_id: int = 900) -> ChatMemberAdministrator:
+    """Another bot that is an admin of a channel (getChatAdministrators of the test mocks)."""
+    return ChatMemberAdministrator(
+        user=User(id=user_id, is_bot=True, first_name=username, username=username), can_be_edited=False,
+        is_anonymous=False, can_manage_chat=True, can_delete_messages=True, can_manage_video_chats=False,
+        can_restrict_members=False, can_promote_members=False, can_change_info=False, can_invite_users=False,
+        can_post_stories=False, can_edit_stories=False, can_delete_stories=False,
+        can_send_welcome_messages=False, can_post_messages=True, can_edit_messages=True,
+    )
+
+
 class FakeBot:
     def __init__(self, bot_id: int = BOT_ID, username: str = "test_bot"):
         self.id = bot_id
@@ -54,6 +65,8 @@ class FakeBot:
         self.bot_status: dict[int, str] = {}
         self.bot_rights: dict[int, dict] = {}
         self.member_counts: dict[int, int] = {}
+        # chat_id → usernames of other bots that are its admins (get_chat_administrators)
+        self.admin_bots: dict[int, list[str]] = {}
         self.edit_media_returns_message = False
         self._groups = itertools.count(1)
 
@@ -208,6 +221,11 @@ class FakeBot:
         if status == "creator":
             return ChatMemberOwner(user=user, is_anonymous=False)
         return ChatMemberLeft(user=user)
+
+    async def get_chat_administrators(self, chat_id: int | str, **kwargs: Any) -> list:
+        self._record("get_chat_administrators", {"chat_id": chat_id, **kwargs})
+        info = self._chat_info(chat_id)
+        return [admin_bot_member(name, 900 + i) for i, name in enumerate(self.admin_bots.get(info["id"], []))]
 
     async def get_chat_member_count(self, chat_id: int | str, **kwargs: Any) -> int:
         self._record("get_chat_member_count", {"chat_id": chat_id, **kwargs})

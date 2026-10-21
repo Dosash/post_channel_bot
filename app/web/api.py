@@ -2,7 +2,9 @@
 
 Settings: ``GET /api/settings`` (bot, password, ``premium_emoji``…), ``PUT /api/settings/premium-emoji``
 ``{enabled: bool}`` → ``{premium_emoji}`` (SPEC_V23: the bot has a Fragment username, custom emoji
-are published as they are).
+are published as they are). ``PUT /api/settings/helper-bots {bots: ["a_bot", …] | "a_bot b_bot"}`` →
+``{helper_bots}`` — the owner's other bots offered as «➕ @bot» links in new channels;
+``GET /api/channels/{id}/helpers`` → ``{helpers: [{username, is_admin, url}]}``.
 
 Publishing requests (``POST /api/posts``, ``PUT /api/posts/{id}``, ``POST /api/posts/{id}/publish``)
 accept ``X-Idempotency-Key``: a retry with the same key never creates or publishes again
@@ -77,6 +79,7 @@ from app.media import (
     post_media,
 )
 from app.services import channels as channels_service
+from app.services import helper_bots
 from app.services import plan as plan_service
 from app.services import stats as stats_service
 from app.services import timezone as timezone_service
@@ -1178,6 +1181,7 @@ async def get_settings(request: web.Request) -> web.Response:
         **await bot_settings(request.app),
         # SPEC_V23: the bot has a Fragment username → custom emoji are published as they are.
         "premium_emoji": await _db(request).get_premium_emoji(),
+        "helper_bots": await helper_bots.get_helpers(_db(request)),
         "password_set": await get_password_hash(_db(request), config) is not None,
         "password_fixed": fixed_password(config) is not None,
         "password_source": await password_source(_db(request), config),
@@ -1231,6 +1235,33 @@ async def set_premium_emoji(request: web.Request) -> web.Response:
     return web.json_response({"premium_emoji": await db.get_premium_emoji()})
 
 
+HELPER_BOTS_VALUE_ERROR = "Ожидается bots: список юзернеймов ботов или строка"
+
+
+async def set_helper_bots(request: web.Request) -> web.Response:
+    """``PUT /api/settings/helper-bots {bots: [..] | "@a_bot, @b_bot"}`` → ``{helper_bots}``."""
+    body = await read_json(request)
+    raw = body.get("bots")
+    if not isinstance(raw, (str, list)):
+        raise json_error(400, HELPER_BOTS_VALUE_ERROR)
+    info = await cached_bot_info(request.app, timeout=SETTINGS_GETME_TIMEOUT)
+    try:
+        names = helper_bots.parse_list(raw, (info or {}).get("username"))
+    except ValueError as exc:
+        raise json_error(400, str(exc)) from exc
+    await helper_bots.set_helpers(_db(request), names)
+    log.info("Web: helper bots set to %s", names)
+    return web.json_response({"helper_bots": names})
+
+
+async def channel_helpers(request: web.Request) -> web.Response:
+    """``GET /api/channels/{id}/helpers`` → ``{helpers: [{username, is_admin, url}]}``; is_admin is
+    null when Telegram did not tell."""
+    db = _db(request)
+    channel = await get_channel_or_404(db, path_id(request))
+    return web.json_response({"helpers": await helper_bots.helpers_status(_bot(request), db, channel["id"])})
+
+
 # ------------------------------------------------------------------ routes
 
 POST_ID = r"{id:[0-9]{1,18}}"
@@ -1249,6 +1280,7 @@ def setup_routes(app: web.Application) -> None:
     r.add_get("/api/settings", get_settings)
     r.add_put("/api/settings/premium-emoji", set_premium_emoji)
     r.add_put("/api/settings/timezone", set_timezone)
+    r.add_put("/api/settings/helper-bots", set_helper_bots)
 
     # The requests that may publish accept X-Idempotency-Key (app.web.idempotency).
     r.add_get("/api/posts", list_posts)
@@ -1267,6 +1299,7 @@ def setup_routes(app: web.Application) -> None:
     r.add_post(f"/api/channels/{CHANNEL_ID}/refresh", refresh_channel)
     r.add_delete(f"/api/channels/{CHANNEL_ID}", delete_channel)
     r.add_get(f"/api/channels/{CHANNEL_ID}/stats", channel_stats)
+    r.add_get(f"/api/channels/{CHANNEL_ID}/helpers", channel_helpers)
     r.add_get("/api/stats", combined_stats)
 
     r.add_get("/api/admins", list_admins)
